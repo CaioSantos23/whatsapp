@@ -394,73 +394,61 @@
     // #step-analysis, então é ele visível que separa a VSL de verdade desse começo mudo. O `video:timeupdate` traz
     // `detail.time` em segundos e a duração vem do getter `duration`; sem duração, não há patamar. Ele também sai com
     // time 0 ao carregar os metadados, mesmo sem tocar, e por isso o início pelo timeupdate exige tempo andando.
-
-
-function vigiarPlayer() {
-    var video = document.getElementById('meuVideo');
-    if (!video) return;
-    engancharPlayer(video);
-}
-
-function engancharPlayer(player) {
-    function vslAberta() {
-        var passo = document.getElementById('step-analysis');
-        return !passo || getComputedStyle(passo).display !== 'none';
+    function vigiarPlayer() {
+        var caixa = document.getElementById('vturb-container');
+        if (!caixa) return;
+        var voltas = 0;
+        var iv = setInterval(function () {
+            try {
+                var player = caixa.querySelector('vturb-smartplayer');
+                if (player) {
+                    clearInterval(iv);
+                    engancharPlayer(player);
+                    return;
+                }
+                if (++voltas >= 1200) clearInterval(iv);
+            } catch (e) { clearInterval(iv); }
+        }, 500);
     }
 
-    function duracao() {
-        var d = player.duration;
-        return typeof d === 'number' && isFinite(d) && d > 0 ? d : 0;
-    }
+    function engancharPlayer(player) {
+        function vslAberta() {
+            var passo = document.getElementById('step-analysis');
+            return !passo || getComputedStyle(passo).display !== 'none';
+        }
 
-    var patamaresMarcados = {};
-    var inicioMarcado = false;
+        function duracao() {
+            var d = player.duration;
+            return typeof d === 'number' && isFinite(d) && d > 0 ? d : 0;
+        }
 
-    function marcarPatamares(tempo, total) {
-        [25, 50, 75, 100].forEach(function (pct) {
-            var alvo = pct === 100 ? total - 0.5 : total * pct / 100;
+        function marcarPatamares(tempo, total) {
+            [25, 50, 75, 100].forEach(function (pct) {
+                var alvo = pct === 100 ? total - 0.5 : total * pct / 100;
+                if (tempo >= alvo) window.zrEvento('vsl_progresso', { pct: pct });
+            });
+        }
 
-            if (tempo >= alvo && !patamaresMarcados[pct]) {
-                patamaresMarcados[pct] = true;
-                window.zrEvento('vsl_progresso', { pct: pct });
-            }
+        player.addEventListener('video:play', function () {
+            try { if (vslAberta()) window.zrEvento('vsl_inicio', {}); } catch (e) { /* nada */ }
+        });
+        player.addEventListener('video:timeupdate', function (e) {
+            try {
+                if (!vslAberta()) return;
+                var tempo = e && e.detail && typeof e.detail.time === 'number' ? e.detail.time : player.currentTime;
+                if (typeof tempo !== 'number' || !(tempo > 0)) return;
+                if (player.paused === false) window.zrEvento('vsl_inicio', {});
+                var total = duracao();
+                if (total) marcarPatamares(tempo, total);
+            } catch (x) { /* nada */ }
+        });
+        player.addEventListener('video:ended', function () {
+            try {
+                var total = duracao();
+                if (vslAberta() && total) marcarPatamares(total, total);
+            } catch (e) { /* nada */ }
         });
     }
-
-    function marcarInicio() {
-        if (!vslAberta() || inicioMarcado) return;
-        inicioMarcado = true;
-        window.zrEvento('vsl_inicio', {});
-    }
-
-    player.addEventListener('play', function () {
-        try {
-            marcarInicio();
-        } catch (e) {}
-    });
-
-    player.addEventListener('timeupdate', function () {
-        try {
-            if (!vslAberta()) return;
-
-            var tempo = player.currentTime;
-            if (typeof tempo !== 'number' || !(tempo > 0)) return;
-
-            if (!player.paused) marcarInicio();
-
-            var total = duracao();
-            if (total) marcarPatamares(tempo, total);
-        } catch (e) {}
-    });
-
-    player.addEventListener('ended', function () {
-        try {
-            var total = duracao();
-            if (vslAberta() && total) marcarPatamares(total, total);
-        } catch (e) {}
-    });
-}
-
 
     function iniciar() {
         try { vigiarFoto(); } catch (e) { /* nada */ }
@@ -771,25 +759,6 @@ function engancharPlayer(player) {
             border-radius: 16px;
             overflow: hidden;
             box-shadow: 0 8px 40px rgba(0,0,0,0.12);
-            
-          /* Player de vídeo MP4 */
-           #vturb-container {
-    width: 100%;
-    position: relative;
-    overflow: hidden;
-    border-radius: 16px;
-    background: #000;
-}
-
-        #meuVideo {
-    display: block;
-    width: 100%;
-    height: auto;
-    border-radius: 16px;
-    background: #000;
-    object-fit: contain;
-}
-
         }
 
         @media (max-height: 620px) {
@@ -1133,22 +1102,9 @@ function engancharPlayer(player) {
                 <span class="watch-tag">▶ ASSISTA AGORA</span>
                 <h2>Assista a este vídeo enquanto finalizamos a investigação do número que você nos enviou.</h2>
             </div>
-            
-<div class="vsl-wrapper">
-    <div id="vturb-container">
-        <video
-            id="meuVideo"
-            controls
-            playsinline
-            preload="metadata"
-            
-        >
-            <source src="./video.mp4" type="video/mp4">
-            Seu navegador não suporta vídeos HTML5.
-        </video>
-    </div>
-</div>
-
+            <div class="vsl-wrapper">
+                <div id="vturb-container"></div>
+            </div>
             <p style="text-align:center;font-size:12px;color:var(--text-muted);margin-top:6px;">🔊 Ative o som para não perder nada</p>
         </div>
 
@@ -1569,19 +1525,59 @@ function engancharPlayer(player) {
         tentarTocar();
     }
 
-    
-    function montarPlayer() {
-    const video = document.getElementById('meuVideo');
+   
+function montarPlayer() {
+    if (oPlayer) return;
 
-    if (!video) {
-        console.error('Vídeo MP4 não encontrado no HTML.');
-        return;
+    const vturbContainer = document.getElementById('vturb-container');
+    if (!vturbContainer) return;
+
+    vturbContainer.innerHTML = `
+        <vturb-smartplayer
+            id="vid-6ae1162365f5bd4b3ef541bf"
+            style="display: block; margin: 0 auto; width: 100%; max-width: 400px;"
+        >
+            <div
+                class="vturb-player-placeholder"
+                style="position: relative; width: 100%; padding: 133.33333333333331% 0 0; z-index: 0; background-color: black;"
+            ></div>
+        </vturb-smartplayer>
+    `;
+
+    oPlayer = vturbContainer.querySelector('vturb-smartplayer');
+
+    if (oPlayer) {
+        oPlayer.addEventListener('video:play', segurarAteAVSL);
+        oPlayer.addEventListener('video:playing', segurarAteAVSL);
+        oPlayer.addEventListener('video:canplay', segurarAteAVSL);
+        oPlayer.addEventListener('video:loadeddata', segurarAteAVSL);
+        oPlayer.addEventListener('video:timeupdate', segurarAteAVSL);
+
+        oPlayer.addEventListener('player:ready', function () {
+            segurarAteAVSL();
+
+            if (typeof oPlayer.displayHiddenElements !== 'function') return;
+
+            oPlayer.displayHiddenElements(
+                PITCH_SEGUNDOS,
+                ['.hide'],
+                {
+                    persist: true,
+                    callback: finalizar
+                }
+            );
+        });
     }
 
-    // O vídeo já existe no HTML.
-    // Não é necessário carregar scripts externos.
-    oPlayer = video;
+    const script = document.createElement('script');
+    script.src = 'https://scripts.converteai.net/5b14b9a8-2f51-4e1a-9e6d-1f01458bc857/players/6ae1162365f5bd4b3ef541bf/v4/player.js';
+    script.async = true;
+    document.head.appendChild(script);
+
+    segurarAteAVSL();
+    seguraTimer = setInterval(segurarAteAVSL, 25);
 }
+
 
     function startAnalysis(display, digits) {
 
