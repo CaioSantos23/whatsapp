@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; media-src 'self'; connect-src 'none'; form-action 'none'; base-uri 'none'">
 <title>WPP — Demonstração educativa de golpe virtual</title>
 <meta name="description" content="Simulação educativa: todos os resultados são fictícios. Não acessa contas ou mensagens."><style>
         *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
@@ -770,7 +770,7 @@ phone.addEventListener('input', () => {
  const n = phone.value.replace(/\D/g,'').slice(0,11);
  phone.value = n.slice(0,2) + (n.length>2?' '+n.slice(2,7):'') + (n.length>7?'-'+n.slice(7):'');
 });
-el('vturb-container').innerHTML = '<div class="demo-panel"><strong>Vídeo substituído por explicação educativa</strong><p>O golpe usa um vídeo para prender a atenção enquanto uma barra simula uma investigação. Aqui, todo o processo dura 20 segundos.</p><p id="demo-stage" aria-live="polite">Simulação pronta para começar.</p><button type="button" id="finish-demo">Concluir simulação agora</button></div>';
+el('vturb-container').innerHTML = '<video id="demo-video" controls playsinline preload="metadata" aria-label="Vídeo da demonstração educativa" style="display:block;width:100%;max-width:300px;max-height:70vh;margin:0 auto;background:#000;border-radius:16px"><source src="assets/demo-seguranca.mp4" type="video/mp4">Seu navegador não suporta este vídeo.</video><div class="demo-panel"><p id="demo-stage" aria-live="polite">Simulação pronta para começar.</p><button type="button" id="finish-demo">Concluir simulação agora</button></div>';
 function complete(){
  clearInterval(timer);
  el('pct-text').textContent='100%';
