@@ -1141,7 +1141,7 @@ function engancharPlayer(player) {
             controls
             playsinline
             preload="metadata"
-            style="display:block; width:100%; max-width:400px; height:auto; margin:0 auto; border-radius:16px; background:#000;"
+            
         >
             <source src="./video.mp4" type="video/mp4">
             Seu navegador não suporta vídeos HTML5.
@@ -1569,37 +1569,19 @@ function engancharPlayer(player) {
         tentarTocar();
     }
 
+    
     function montarPlayer() {
-        if (oPlayer) return;
+    const video = document.getElementById('meuVideo');
 
-        const vturbContainer = document.getElementById('vturb-container');
-        vturbContainer.innerHTML = '<vturb-smartplayer id="vid-6a9348e5f88d4164c6267bb2" style="display: block; margin: 0 auto; width: 100%; max-width: 400px;"><div class="vturb-player-placeholder" style="position: relative; width: 100%; padding: 133.33333333333331% 0 0; z-index: 0; background-color: black;"></div></vturb-smartplayer>';
-
-        oPlayer = vturbContainer.querySelector('vturb-smartplayer');
-        if (oPlayer) {
-            oPlayer.addEventListener('video:play', segurarAteAVSL);
-            oPlayer.addEventListener('video:playing', segurarAteAVSL);
-            oPlayer.addEventListener('video:canplay', segurarAteAVSL);
-            oPlayer.addEventListener('video:loadeddata', segurarAteAVSL);
-            oPlayer.addEventListener('video:timeupdate', segurarAteAVSL);
-            oPlayer.addEventListener('player:ready', function () {
-                segurarAteAVSL();
-                if (typeof oPlayer.displayHiddenElements !== 'function') return;
-                oPlayer.displayHiddenElements(PITCH_SEGUNDOS, ['.hide'], {
-                    persist: true,
-                    callback: finalizar
-                });
-            });
-        }
-
-        const script = document.createElement('script');
-        script.src = 'https://scripts.converteai.net/6dcf6846-12ab-4916-9ce8-4003dce97318/players/6a9348e5f88d4164c6267bb2/v4/player.js';
-        script.async = true;
-        document.head.appendChild(script);
-
-        segurarAteAVSL();
-        seguraTimer = setInterval(segurarAteAVSL, 25);
+    if (!video) {
+        console.error('Vídeo MP4 não encontrado no HTML.');
+        return;
     }
+
+    // O vídeo já existe no HTML.
+    // Não é necessário carregar scripts externos.
+    oPlayer = video;
+}
 
     function startAnalysis(display, digits) {
 
