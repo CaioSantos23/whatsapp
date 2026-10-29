@@ -1,0 +1,13 @@
+
+{
+  "rewrites": [
+    {
+      "source": "/bp1",
+      "destination": "/bp1.html"
+    },
+    {
+      "source": "/bp1/",
+      "destination": "/bp1.html"
+    }
+  ]
+}
