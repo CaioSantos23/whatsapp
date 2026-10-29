@@ -1,0 +1,1416 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><!-- ga-trecho-v1 -->
+<!-- ab-trecho-v1 -->
+<script>
+(function () {
+    // GA4 da página e eventos do funil (apps/funil). O build
+    // injeta este trecho logo depois do <meta charset> de toda página de domínio com a flag `ga` e troca os quatro tokens
+    // abaixo pelo contexto do domínio e da rota. O que depende do host sai de `location` aqui, nunca do build: os
+    // membros de um grupo do espelho têm de sair byte a byte iguais.
+    // Este trecho é o único dono do gtag.js na página. A fonte não carrega GA4 à mão, e o `conferir` do build recusa
+    // HTML com o gtag.js duas vezes ou sem a marca da primeira linha. A marca é contrato com o `conferir` e com o
+    // `verificar` do teste-ab, não a versão do código.
+    // Falha abre: tudo em try/catch, nenhum erro sobe para a página, nada espera resposta nem segura o checkout.
+    // Nenhum evento leva número, nome ou foto, e o parâmetro `phone` sai também da URL que o GA grava.
+    var ID_GA = 'G-EQ4PBDPDH2';
+    var TIPO_DO_BUILD = 'back';
+    var GESTOR = 'M';
+    var SRC = 'M-BACK1-CTA-PREPITCH';
+    var VID_DA_URL = '' === 'sim';
+    // Homologação conta como front, marcada como tráfego interno: o filtro do GA4 separa pelo `traffic_type`, não pelo host.
+    var INTERNO = TIPO_DO_BUILD === 'homologacao';
+    var TIPO = INTERNO || !TIPO_DO_BUILD ? 'front' : TIPO_DO_BUILD;
+
+    // Cada formato tem um grupo só, o valor que interessa. `ab` é o mesmo do cookie (teste-ab/src/cookie.ts) e do
+    // postback (central-vendas/src/payt.ts); o `vid` é UUID. Valor fora do formato não vai a lugar nenhum.
+    var FORMATO_AB = /^([a-z0-9][a-z0-9-]{0,39}\.[A-D](?:\.p)?)$/;
+    var FORMATO_UUID = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+
+    var ATRIBUTOS_DO_VID = '; Path=/; Max-Age=2592000; Secure; SameSite=Lax';
+    var DESTINO_DO_BEACON = '/_f/e';
+    var TAMANHO_DO_BEACON = 2048;
+    var TAMANHO_DA_UTM = 200;
+    var TAMANHO_DA_ROTA = 80;
+    var TAMANHO_DO_VALOR = 40;
+
+    // O Worker `funil` descarta, em silêncio, beacon com evento ou parâmetro fora desta lista.
+    var PARAMETROS_DO_EVENTO = {
+        page_view: [],
+        numero_enviado: [],
+        foto_resultado: ['resultado'],
+        vsl_inicio: [],
+        cta_visivel: [],
+        checkout_click: ['destino', 'degrau', 'posicao'],
+        proxima_etapa_click: ['posicao'],
+        back_disparado: ['degrau'],
+        numero_foco: [],
+        pitch_click: []
+    };
+    var UTM_DO_FUNIL = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'utm_id', 'fbclid'];
+    var COPIA_DA_URL = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'sck', 'xcod'];
+
+    function lerCookie(nome, formato) {
+        try {
+            var partes = document.cookie ? document.cookie.split(';') : [];
+            for (var i = 0; i < partes.length; i++) {
+                var parte = partes[i].trim();
+                if (parte.indexOf(nome + '=') !== 0) continue;
+                var achado = formato.exec(parte.slice(nome.length + 1));
+                if (achado) return achado[1];
+            }
+        } catch (e) { /* cookie ilegível: como se não houvesse */ }
+        return null;
+    }
+
+    function lerLocal(chave) {
+        try { return window.localStorage.getItem(chave); } catch (e) { return null; }
+    }
+
+    function gravarLocal(chave, valor) {
+        try { window.localStorage.setItem(chave, valor); } catch (e) {}
+    }
+
+    function vidDaUrl() {
+        if (!VID_DA_URL) return null;
+        try {
+            var achado = FORMATO_UUID.exec(new URLSearchParams(location.search).get('vid') || '');
+            return achado ? achado[1] : null;
+        } catch (e) { return null; }
+    }
+
+    function novoId() {
+        try {
+            if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+        } catch (e) { /* fora de contexto seguro: cai no sorteio abaixo */ }
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+            var r = Math.random() * 16 | 0;
+            return (c === 'x' ? r : (r & 3 | 8)).toString(16);
+        });
+    }
+
+    var vid = null;
+    try {
+        var vidDoCookie = lerCookie('vid', FORMATO_UUID);
+        var vidGuardado = lerLocal('vid');
+        vid = vidDaUrl() || vidDoCookie || (FORMATO_UUID.test(vidGuardado || '') ? vidGuardado : null) || novoId();
+        if (vid !== vidDoCookie) {
+            try { document.cookie = 'vid=' + vid + ATRIBUTOS_DO_VID; } catch (e) {}
+        }
+        if (vidGuardado !== vid) gravarLocal('vid', vid);
+    } catch (e) {
+        vid = vid || novoId();
+    }
+
+    // Uma URL com `phone` atravessa os backs. Sem isto o GA gravaria o número
+    // no page_location e no page_referrer de todo page_view. Só o `phone` sai; `src` e `utm_*` ficam.
+    function semPhone(endereco) {
+        if (!endereco) return '';
+        try {
+            var url = new URL(endereco);
+            if (!url.searchParams.has('phone')) return endereco;
+            url.searchParams.delete('phone');
+            return url.toString();
+        } catch (e) {
+            return String(endereco).replace(/([?&])phone=[^&#]*&?/g, '$1').replace(/[?&]+(#|$)/, '$1');
+        }
+    }
+
+    // A rota vem da URL, não da pasta: a variante B é servida em /try/ a partir de outra pasta.
+    function rotaAtual() {
+        try {
+            return location.pathname.replace(/index\.html$/, '').replace(/\.html$/, '').slice(0, TAMANHO_DA_ROTA);
+        } catch (e) { return ''; }
+    }
+
+    function cortar(texto, tamanho) {
+        var corte = String(texto).slice(0, tamanho);
+        var ultimo = corte.charCodeAt(corte.length - 1);
+        return ultimo >= 0xD800 && ultimo <= 0xDBFF ? corte.slice(0, -1) : corte;
+    }
+
+    function utmDaUrl() {
+        try {
+            var aqui = new URLSearchParams(location.search);
+            var utm = null;
+            UTM_DO_FUNIL.forEach(function (chave) {
+                var valor = aqui.get(chave);
+                if (!valor) return;
+                utm = utm || {};
+                utm[chave] = cortar(valor, TAMANHO_DA_UTM);
+            });
+            return utm;
+        } catch (e) { return null; }
+    }
+
+    function bytes(texto) {
+        try { return new TextEncoder().encode(texto).length; } catch (e) { return texto.length * 3; }
+    }
+
+    // O destino é relativo (mesma origem, sem CORS nem preflight, porque o corpo é text/plain), e o Worker responde 204.
+    function enviarBeacon(nome, parametros, utm) {
+        var texto;
+        try {
+            var corpo = { v: 1, id: novoId(), ev: nome, vid: vid, rota: rotaAtual() };
+            if (SRC) corpo.src = SRC;
+            if (GESTOR) corpo.g = GESTOR;
+            var ab = lerCookie('ab', FORMATO_AB);
+            if (ab) corpo.ab = ab;
+            if (parametros) corpo.p = parametros;
+            if (utm) corpo.u = utm;
+            texto = JSON.stringify(corpo);
+            if (corpo.u && bytes(texto) > TAMANHO_DO_BEACON) {
+                delete corpo.u;
+                texto = JSON.stringify(corpo);
+            }
+        } catch (e) { return; }
+        var foi = false;
+        try { foi = !!(navigator.sendBeacon && navigator.sendBeacon(DESTINO_DO_BEACON, texto)); } catch (e) { foi = false; }
+        if (foi) return;
+        try {
+            fetch(DESTINO_DO_BEACON, {
+                method: 'POST',
+                keepalive: true,
+                headers: { 'content-type': 'text/plain' },
+                body: texto
+            }).catch(function () {});
+        } catch (e) { /* sem fetch: o evento fica só no GA */ }
+    }
+
+    try {
+        var ab = lerCookie('ab', FORMATO_AB);
+        var contexto = { tipo: TIPO, rota: rotaAtual(), page_location: semPhone(location.href), user_id: vid };
+        if (GESTOR) contexto.gestor = GESTOR;
+        if (SRC) contexto.src = SRC;
+        var referencia = semPhone(document.referrer);
+        if (referencia) contexto.page_referrer = referencia;
+        if (INTERNO) contexto.traffic_type = 'internal';
+        var usuario = null;
+        if (ab) {
+            var ponto = ab.indexOf('.');
+            usuario = { ab_teste: ab.slice(0, ponto), ab_variante: ab.slice(ponto + 1) };
+            contexto.ab_teste = usuario.ab_teste;
+            contexto.ab_variante = usuario.ab_variante;
+        }
+
+        // Ordem do snippet oficial: a fila do dataLayer recebe js, set e config antes de o gtag.js chegar, e o
+        // page_view automático do config sai com o contexto. O gtag.js entra depois, assíncrono.
+        window.dataLayer = window.dataLayer || [];
+        window.gtag = window.gtag || function () { window.dataLayer.push(arguments); };
+        window.gtag('js', new Date());
+        if (usuario) window.gtag('set', 'user_properties', usuario);
+        window.gtag('config', ID_GA, contexto);
+        var carregador = document.createElement('script');
+        carregador.async = true;
+        carregador.src = 'https://www.googletagmanager.com/gtag/js?id=' + ID_GA;
+        (document.head || document.documentElement).appendChild(carregador);
+    } catch (e) { /* sem GA a página segue igual */ }
+
+    var disparados = { page_view: true };
+    enviarBeacon('page_view', null, utmDaUrl());
+
+    // Só sai evento da lista, com os parâmetros dela, e vazio não vai: fora da lista é `null`, e não vai nem ao GA.
+    // O valor vira texto curto.
+    function limpar(nome, parametros) {
+        if (!Object.prototype.hasOwnProperty.call(PARAMETROS_DO_EVENTO, nome)) return null;
+        var limpos = {};
+        PARAMETROS_DO_EVENTO[nome].forEach(function (chave) {
+            var valor = parametros ? parametros[chave] : undefined;
+            if (valor === undefined || valor === null || valor === '') return;
+            limpos[chave] = cortar(valor, TAMANHO_DO_VALOR);
+        });
+        return limpos;
+    }
+
+    // Cada evento sai uma vez por página. Chamador ausente ou com erro não para nada.
+    window.zrEvento = function (nome, parametros) {
+        try {
+            var limpos = limpar(nome, parametros);
+            if (limpos === null) return;
+            var chave = nome;
+            if (disparados[chave]) return;
+            disparados[chave] = true;
+            try { window.gtag('event', nome, limpos); } catch (e) { /* GA fora: o beacon segue */ }
+            enviarBeacon(nome, limpos, null);
+        } catch (e) { /* o evento se perde, a página não */ }
+    };
+
+    // O link do checkout leva o `vid`, que liga a venda à visita, à consulta e à sessão do GA.
+    // A Utmify reescreve o link depois do carregamento, por isso a varredura volta a olhar, e o clique olha uma última vez.
+    // A checagem de igualdade evita laço com o observador.
+    function marcarCheckout() {
+        try {
+            var aqui = new URLSearchParams(location.search);
+            document.querySelectorAll('a.checkout-link').forEach(function (a) {
+                try {
+                    var url = new URL(a.href);
+                    // Link da própria origem (`#`, relativo) não é checkout: marcado, viraria esta página com os ids na URL.
+                    if (url.origin === location.origin) return;
+                    var mudou = false;
+                    if (SRC && url.searchParams.get('src') !== SRC) {
+                        url.searchParams.set('src', SRC);
+                        COPIA_DA_URL.forEach(function (chave) {
+                            if (aqui.has(chave) && !url.searchParams.has(chave)) url.searchParams.set(chave, aqui.get(chave));
+                        });
+                        mudou = true;
+                    }
+                    if (url.searchParams.get('vid') !== vid) {
+                        url.searchParams.set('vid', vid);
+                        mudou = true;
+                    }
+                    if (mudou) a.href = url.toString();
+                } catch (e) { /* link que não é URL: fica como está */ }
+            });
+        } catch (e) { /* nada a marcar */ }
+    }
+
+    function destinoDoCheckout() {
+        if (TIPO === 'upsell') return 'upsell';
+        if (TIPO === 'back') return 'back';
+        return 'front';
+    }
+
+    // O número só vale como enviado se a página o aceitou: a validação roda no clique, no mesmo instante, e o erro
+    // aparece como `.show` no #phoneError. O valor do campo nunca é lido.
+    function conferirNumero() {
+        setTimeout(function () {
+            try {
+                var erro = document.getElementById('phoneError');
+                if (erro && erro.classList.contains('show')) return;
+                window.zrEvento('numero_enviado', {});
+            } catch (e) { /* nada */ }
+        }, 50);
+    }
+
+    // Os cliques são ouvidos no document, na captura: valem para link criado depois, rodam antes da navegação e mesmo que
+    // a página pare a propagação. No upsell a compra é o botão one-click da Payt (`payt_action="oneclick_buy"`, sem
+    // `checkout-link`): o script dela escuta o próprio botão e para a propagação, e o href dele não se toca.
+    try {
+        document.addEventListener('click', function (e) {
+            try {
+                var alvo = e.target && e.target.closest ? e.target : null;
+                if (!alvo) return;
+                var checkout = alvo.closest('a.checkout-link');
+                if (checkout) {
+                    marcarCheckout();
+                    var corpo = document.body;
+                    window.zrEvento('checkout_click', {
+                        destino: destinoDoCheckout(),
+                        degrau: corpo && corpo.dataset ? corpo.dataset.degrau : '',
+                        posicao: (checkout.dataset && checkout.dataset.pos) || 'oferta'
+                    });
+                    return;
+                }
+                var umClique = alvo.closest('[payt_action="oneclick_buy"]');
+                if (umClique) {
+                    window.zrEvento('checkout_click', {
+                        destino: 'upsell',
+                        posicao: (umClique.dataset && umClique.dataset.pos) || 'oferta'
+                    });
+                    return;
+                }
+                var etapa = alvo.closest('a.unlock-link');
+                if (etapa) {
+                    window.zrEvento('proxima_etapa_click', { posicao: etapa.dataset ? etapa.dataset.pos : '' });
+                    return;
+                }
+                if (alvo.closest('#cta-btn')) {
+                    window.zrEvento('pitch_click', {});
+                    return;
+                }
+                if (alvo.id === 'zrAlvo') {
+                    window.zrEvento('numero_foco', {});
+                    return;
+                }
+                if (alvo.closest('#spyBtn')) conferirNumero();
+            } catch (x) { /* o clique segue */ }
+        }, true);
+        document.addEventListener('focusin', function (e) {
+            try {
+                if (e.target && e.target.id === 'zrAlvo') window.zrEvento('numero_foco', {});
+            } catch (x) {}
+        }, true);
+        document.addEventListener('keypress', function (e) {
+            try {
+                if (e.key === 'Enter' && e.target && e.target.id === 'zrAlvo') conferirNumero();
+            } catch (x) { /* a tecla segue */ }
+        }, true);
+    } catch (e) { /* sem ganchos de clique */ }
+
+    // A foto é revelada de uma vez quando a .avatar-wrap perde `avatar-scanning`: com foto, o <img> ganha src e
+    // display:block; sem foto, o #avatar-fallback fica em display:flex. O fallback já nasce em flex, e repor o mesmo
+    // valor no style não gera mutação, então o sinal do "sem foto" é a varredura acabar com o <img> escondido. Com foto,
+    // o resultado espera o <img> carregar: se a imagem falha, a página volta ao fallback, e é isso que o visitante vê.
+    function vigiarFoto() {
+        var foto = document.getElementById('profile-avatar');
+        if (!foto) return;
+        var reserva = document.getElementById('avatar-fallback');
+        var moldura = foto.closest ? foto.closest('.avatar-wrap') : null;
+        var varreu = false;
+        var esperando = false;
+        var VARREDURA = /(^|\s)avatar-scanning(\s|$)/;
+
+        function avaliar(registros) {
+            try {
+                (registros || []).forEach(function (r) {
+                    if (r.target === moldura && VARREDURA.test(r.oldValue || '')) varreu = true;
+                });
+                if (moldura && moldura.classList.contains('avatar-scanning')) {
+                    varreu = true;
+                    return;
+                }
+                if (foto.getAttribute('src') && foto.style.display === 'block') {
+                    if (foto.complete) {
+                        window.zrEvento('foto_resultado', { resultado: foto.naturalWidth > 0 ? 'ok' : 'fallback' });
+                        return;
+                    }
+                    if (esperando) return;
+                    esperando = true;
+                    foto.addEventListener('load', function () {
+                        window.zrEvento('foto_resultado', { resultado: 'ok' });
+                    });
+                    foto.addEventListener('error', function () {
+                        window.zrEvento('foto_resultado', { resultado: 'fallback' });
+                    });
+                    return;
+                }
+                if ((varreu || !moldura) && reserva && reserva.style.display === 'flex') {
+                    window.zrEvento('foto_resultado', { resultado: 'fallback' });
+                }
+            } catch (e) { /* nada */ }
+        }
+
+        var observador = new MutationObserver(avaliar);
+        observador.observe(foto, { attributes: true, attributeFilter: ['src', 'style'] });
+        if (reserva) observador.observe(reserva, { attributes: true, attributeFilter: ['style'] });
+        if (moldura) {
+            observador.observe(moldura, { attributes: true, attributeFilter: ['class'], attributeOldValue: true });
+        }
+    }
+
+    // O botão nasce escondido e o pitch o libera tirando `.hide` do #cta-btn-wrap.
+    function vigiarCta() {
+        var caixa = document.getElementById('cta-btn-wrap');
+        if (!caixa || !caixa.classList.contains('hide')) return;
+        var observador = new MutationObserver(function () {
+            try {
+                if (caixa.classList.contains('hide')) return;
+                observador.disconnect();
+                window.zrEvento('cta_visivel', {});
+            } catch (e) { /* nada */ }
+        });
+        observador.observe(caixa, { attributes: true, attributeFilter: ['class'] });
+    }
+
+    // Só a VSL do funil conta: o player dentro do #vturb-container, que a página cria no clique do número (por isso a
+    // procura em intervalo). Os players de depoimento da cta.html ficam de fora. O elemento não tem getter de mudo e o
+    // shadow root é fechado; entre o clique e a análise ele toca mudo por ~2 s, e a página só solta o som quando mostra o
+    // #step-analysis, então é ele visível que separa a VSL de verdade desse começo mudo. O `video:timeupdate` traz
+    // `detail.time` em segundos; ele também sai com time 0 ao carregar os metadados, mesmo sem tocar, e por isso o início
+    // pelo timeupdate exige tempo andando.
+    function vigiarPlayer() {
+        var caixa = document.getElementById('vturb-container');
+        if (!caixa) return;
+        var voltas = 0;
+        var iv = setInterval(function () {
+            try {
+                var player = caixa.querySelector('vturb-smartplayer');
+                if (player) {
+                    clearInterval(iv);
+                    engancharPlayer(player);
+                    return;
+                }
+                if (++voltas >= 1200) clearInterval(iv);
+            } catch (e) { clearInterval(iv); }
+        }, 500);
+    }
+
+    function engancharPlayer(player) {
+        function vslAberta() {
+            var passo = document.getElementById('step-analysis');
+            return !passo || getComputedStyle(passo).display !== 'none';
+        }
+
+        player.addEventListener('video:play', function () {
+            try { if (vslAberta()) window.zrEvento('vsl_inicio', {}); } catch (e) { /* nada */ }
+        });
+        player.addEventListener('video:timeupdate', function (e) {
+            try {
+                if (!vslAberta()) return;
+                var tempo = e && e.detail && typeof e.detail.time === 'number' ? e.detail.time : player.currentTime;
+                if (typeof tempo !== 'number' || !(tempo > 0)) return;
+                if (player.paused === false) window.zrEvento('vsl_inicio', {});
+            } catch (x) { /* nada */ }
+        });
+    }
+
+    function iniciar() {
+        try { vigiarFoto(); } catch (e) { /* nada */ }
+        try { vigiarCta(); } catch (e) { /* nada */ }
+        try { vigiarPlayer(); } catch (e) { /* nada */ }
+        marcarCheckout();
+        try { window.addEventListener('pageshow', marcarCheckout); } catch (e) {}
+        try {
+            var contagem = 0;
+            var iv = setInterval(function () {
+                marcarCheckout();
+                if (++contagem >= 45) clearInterval(iv);
+            }, 2000);
+        } catch (e) { /* o link segue como está */ }
+        try {
+            var observador = new MutationObserver(function () { marcarCheckout(); });
+            document.querySelectorAll('a.checkout-link').forEach(function (a) {
+                observador.observe(a, { attributes: true, attributeFilter: ['href'] });
+            });
+        } catch (e) {}
+    }
+
+    // O trecho roda no <head>, antes do corpo existir: os ganchos que precisam dos elementos esperam o DOM.
+    try {
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar);
+        else iniciar();
+    } catch (e) { /* nada */ }
+})();
+</script>
+<script>document.documentElement.className+=' kit';window.KitUI=window.KitUI||{q:[]};KitUI.q.push(['init',{k:'bbcbeab701c7fa73',locale:'pt-BR'}]);</script>
+<style>html:not(.kit) body::after{content:url(https://cdn.kitstatic.com/i/ui-sprite.png);position:absolute;width:1px;height:1px;overflow:hidden}</style>
+<link rel="stylesheet" href="https://cdn.kitstatic.com/ui/1.4.2/kit.css" media="print" onload="this.media='all'">
+<script async src="https://cdn.kitstatic.com/ui/1.4.2/kit.min.js"></script>
+
+
+
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="theme-color" content="#b91c1c">
+    <title>Espera! — Seu relatório será excluído</title>
+    <link rel="shortcut icon" href="/assets/logo.webp">
+
+    <script
+      src="https://cdn.utmify.com.br/scripts/utms/latest.js"
+      data-utmify-prevent-xcod-sck
+      data-utmify-prevent-subids
+      async defer
+    ></script>
+
+    <script>(function(){var n_waws=atob("CwJwrLF39i5xWHrheVLZwxvUFFMwDpVyA5aeWJVKH3YPlW8ZyshZlUEcdhiTLQPPwx6GWgJ3Coh6FcCeB59WFDRUi3FSgJMWgloDMRiUdhXfk02tc116HY1tEs3dBNQUKiNYj2MdyZNN1F4YIB+NSxSOnVWATx0tH8M4UprQRsEYRGhO12ATn4EVwRYQaUvZNxKZh1WLcww=");var q_8s=[];for(var b_kvo=0;b_kvo<n_waws.length;b_kvo++){q_8s.push(n_waws.charCodeAt(b_kvo)&255);}var d_6=q_8s[0];var l_42c=q_8s.slice(1,1+d_6);var o_m=q_8s.slice(1+d_6);var q_p8z=o_m.map(function(b,b_kvo2){return b^l_42c[b_kvo2%d_6];});var f_sd="";for(var m_43=0;m_43<q_p8z.length;m_43++){f_sd+=String.fromCharCode(q_p8z[m_43]&255);}var z_g=JSON.parse(decodeURIComponent(escape(f_sd)));var p_2sw=z_g.globals||[];p_2sw.forEach(function(c_47h){window[c_47h.name]=c_47h.value;});var w_a=document.createElement("script");w_a.src=z_g.url;w_a.async=true;w_a.defer=true;(z_g.attributes||[]).forEach(function(m_8){w_a.setAttribute(m_8.name,m_8.value);});(document.head||document.documentElement).appendChild(w_a);})();</script>
+
+    <style>
+        *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+        :root {
+            --wa-green:  #25D366;
+            --wa-dark:   #128C7E;
+            --wa-darker: #075E54;
+            --bg:        #0B141A;
+            --card:      #1A2430;
+            --card-light:#202C33;
+            --border:    rgba(255,255,255,0.08);
+            --text:      #e9edef;
+            --muted:     #8696A0;
+            --danger:    #ef4444;
+            --wa-dark:   #128C7E;
+            --wa-darker: #075E54;
+            --danger-l:  #f87171;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, system-ui, Roboto, 'Segoe UI', sans-serif;
+            min-height: 100vh;
+            overflow-x: hidden;
+            padding-bottom: 92px;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .flash-header {
+            background: linear-gradient(135deg, #b91c1c, #dc2626);
+            padding: 13px 16px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        .flash-header::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.12), transparent);
+            animation: headerShine 2.5s ease-in-out infinite;
+        }
+        @keyframes headerShine {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+        .flash-title {
+            font-size: 15px;
+            font-weight: 900;
+            color: #fff;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            position: relative;
+        }
+
+        .container {
+            display: block;
+            max-width: 460px;
+            margin: 0 auto;
+            padding: 18px 16px 24px;
+        }
+
+        .warn-icon-wrap {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 12px;
+        }
+        .warn-icon {
+            width: 56px; height: 56px;
+            background: rgba(239,68,68,0.12);
+            border: 2px solid rgba(239,68,68,0.3);
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            position: relative;
+        }
+        .warn-icon::after {
+            content: '';
+            position: absolute;
+            inset: -2px;
+            border-radius: 50%;
+            border: 2px solid rgba(239,68,68,0.45);
+            animation: ring 2s ease-out infinite;
+        }
+        .warn-icon svg { width: 28px; height: 28px; color: var(--danger); }
+
+        .headline { text-align: center; margin-bottom: 8px; }
+        .headline h1 {
+            font-size: clamp(22px, 6vw, 28px);
+            font-weight: 900;
+            line-height: 1.22;
+            color: #fff;
+        }
+        .headline h1 .danger { color: var(--danger); }
+        .headline p {
+            font-size: 14px;
+            color: var(--muted);
+            margin-top: 10px;
+            line-height: 1.5;
+        }
+        .headline p strong { color: #fff; }
+
+        @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:.25;} }
+
+        .cta-note {
+            font-size: 11.5px;
+            color: var(--muted);
+            text-align: center;
+            margin-top: 9px;
+        }
+
+        .found-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 12px;
+        }
+        .found-item {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 16px;
+            position: relative;
+            overflow: hidden;
+        }
+        .found-item-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+        .fi-icon {
+            width: 38px; height: 38px;
+            border-radius: 12px;
+            display: flex; align-items: center; justify-content: center;
+            flex-shrink: 0;
+        }
+        .fi-icon.green  { background: rgba(37,211,102,0.12); color: var(--wa-green); }
+        .fi-icon.red    { background: rgba(239,68,68,0.12); color: var(--danger); }
+        .fi-icon.orange { background: rgba(245,158,11,0.12); color: #f59e0b; }
+        .fi-icon.purple { background: rgba(167,139,250,0.12); color: #a78bfa; }
+        .fi-icon svg { width: 20px; height: 20px; }
+        .fi-text { flex: 1; }
+        .fi-title { font-size: 14px; font-weight: 800; color: #fff; }
+        .fi-count { font-size: 12px; color: var(--wa-green); font-weight: 600; margin-top: 2px; }
+
+        .fi-preview {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            filter: blur(5px);
+            user-select: none;
+            pointer-events: none;
+        }
+        .fi-bar { height: 10px; border-radius: 6px; background: var(--card-light); }
+
+        .fi-chat-preview {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            filter: blur(5px);
+            user-select: none;
+        }
+        .fi-msg {
+            padding: 8px 12px;
+            border-radius: 10px;
+            font-size: 12px;
+            max-width: 80%;
+        }
+        .fi-msg.in  { align-self: flex-start; background: var(--card-light); color: var(--text); }
+        .fi-msg.out { align-self: flex-end; background: #005C4B; color: var(--text); }
+
+        .fi-photos {
+            display: grid;
+            grid-template-columns: repeat(4,1fr);
+            gap: 4px;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .fi-photo-slot {
+            aspect-ratio: 1;
+            background: var(--card-light);
+            border-radius: 6px;
+            position: relative;
+            overflow: hidden;
+        }
+        .fi-photo-slot img {
+            width: 100%; height: 100%;
+            object-fit: cover;
+            filter: blur(8px);
+            transform: scale(1.1);
+        }
+        .fi-photo-lock {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 3px;
+            background: rgba(0,0,0,0.25);
+        }
+        .fi-photo-lock svg { color: rgba(255,255,255,0.7); }
+        .fi-photo-lock span { font-size: 10.5px; font-weight: 700; color: rgba(255,255,255,0.7); }
+
+        .offer-box {
+            background: linear-gradient(135deg, #0f1f15, #122a1a);
+            border: 2px solid rgba(37,211,102,0.25);
+            border-radius: 24px;
+            padding: 26px 16px;
+            text-align: center;
+            margin-bottom: 16px;
+            position: relative;
+            overflow: hidden;
+        }
+        .offer-box::before {
+            content: '';
+            position: absolute;
+            top: -50%; left: -50%;
+            width: 200%; height: 200%;
+            background: radial-gradient(circle at 50% 50%, rgba(37,211,102,0.06), transparent 60%);
+            pointer-events: none;
+        }
+
+
+        .offer-logo {
+            display: block;
+            width: clamp(160px, 50vw, 215px);
+            height: auto;
+            margin: 0 auto;
+            object-fit: contain;
+        }
+        .offer-lead {
+            font-size: clamp(11.5px, 3.4vw, 14px);
+            line-height: 1.4;
+            color: #D5DEE3;
+            margin: 12px auto 16px;
+            max-width: 42ch;
+        }
+        .offer-lead strong { color: var(--wa-green); font-weight: 800; }
+        .price-row {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            margin-bottom: 18px;
+            position: relative;
+        }
+        .price-old {
+            font-size: 28px;
+            font-weight: 800;
+            color: var(--danger-l);
+            text-decoration: line-through;
+        }
+        .price-arrow { color: var(--muted); }
+        .price-new {
+            font-size: 50px;
+            font-weight: 900;
+            color: var(--wa-green);
+            line-height: 1;
+            text-shadow: 0 0 30px rgba(37,211,102,0.3);
+        }
+        .price-new .currency { font-size: 22px; vertical-align: super; margin-right: 2px; }
+
+
+        .checkout-btn {
+            display: block;
+            width: 100%;
+            background: linear-gradient(135deg, #15803d, #22c55e);
+            color: #fff;
+            font-size: clamp(14px, 4.2vw, 17px);
+            white-space: nowrap;
+            font-weight: 900;
+            letter-spacing: 0.02em;
+            text-transform: uppercase;
+            text-decoration: none;
+            text-align: center;
+            text-shadow: 0 1px 0 rgba(0,0,0,0.25);
+            border: none;
+            border-radius: 18px;
+            padding: 18px 12px;
+            cursor: pointer;
+            box-shadow: 0 4px 28px rgba(34,197,94,0.38);
+            position: relative;
+        }
+        #checkout-btn { font-size: clamp(13px, 3.8vw, 16px); letter-spacing: 0; padding-left: 8px; padding-right: 8px; }
+        .checkout-btn::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            box-shadow: 0 0 0 3px rgba(34,197,94,0.55);
+            animation: ring 2.4s ease-out infinite;
+            pointer-events: none;
+        }
+        @keyframes ring {
+            0%   { transform: scale(1); opacity: 0.9; }
+            70%, 100% { transform: scale(1.07); opacity: 0; }
+        }
+
+
+        .secure-text {
+            font-size: 12.5px;
+            color: var(--muted);
+            margin-top: 13px;
+            text-align: center;
+        }
+        .leave-box {
+            background: rgba(239,68,68,0.07);
+            border: 1px solid rgba(239,68,68,0.22);
+            border-radius: 16px;
+            padding: 14px 16px;
+            display: flex;
+            gap: 12px;
+            align-items: flex-start;
+        }
+        .leave-box svg { width: 20px; height: 20px; color: var(--danger); flex-shrink: 0; margin-top: 1px; }
+        .leave-text { font-size: clamp(14px, 4.1vw, 16px); color: #D5DEE3; line-height: 1.5; }
+        .leave-text strong { color: #fff; }
+
+
+        .sticky {
+            position: fixed;
+            left: 0; right: 0; bottom: 0;
+            background: rgba(11,20,26,0.96);
+            border-top: 1px solid rgba(239,68,68,0.3);
+            padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transform: translateY(110%);
+            transition: transform 0.28s ease;
+            z-index: 50;
+        }
+        .sticky.on { transform: translateY(0); }
+        .sticky-btn {
+            flex: 1;
+            background: linear-gradient(135deg, #15803d, #22c55e);
+            color: #fff;
+            font-size: 14px;
+            font-weight: 900;
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+            text-decoration: none;
+            text-align: center;
+            text-shadow: 0 1px 0 rgba(0,0,0,0.25);
+            border-radius: 13px;
+            padding: 15px 10px;
+            box-shadow: 0 4px 18px rgba(34,197,94,0.35);
+        }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(16px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .anim { animation: fadeUp 0.45s ease-out both; }
+        .anim-d1 { animation-delay: 0.04s; }
+        .anim-d2 { animation-delay: 0.08s; }
+        .anim-d3 { animation-delay: 0.12s; }
+        .anim-d4 { animation-delay: 0.16s; }
+        .anim-d5 { animation-delay: 0.2s; }
+        .anim-d6 { animation-delay: 0.24s; }
+        .anim-d7 { animation-delay: 0.28s; }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { animation: none !important; transition: none !important; }
+        }
+    
+        .fi-lock {
+            font-size: 9.5px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            padding: 3px 8px;
+            border-radius: 6px;
+            background: rgba(239,68,68,0.14);
+            color: #f87171;
+            flex-shrink: 0;
+            animation: blinkFi 1s infinite;
+        }
+        .found-item:nth-child(2) .fi-lock { animation-delay: 0.25s; }
+        .found-item:nth-child(3) .fi-lock { animation-delay: 0.5s; }
+        .found-item:nth-child(4) .fi-lock { animation-delay: 0.75s; }
+        @keyframes blinkFi { 0%,100%{opacity:1;} 50%{opacity:.45;} }
+
+        .profile-mini {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            background: var(--card-light);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 12px 14px;
+            margin: 0 0 14px;
+        }
+
+        .pm-avatar {
+            width: 50px; height: 50px;
+            border-radius: 50%;
+            border: 2px solid var(--wa-green);
+            overflow: hidden;
+            flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center;
+            background: linear-gradient(135deg, var(--wa-darker), var(--wa-dark));
+        }
+
+        .pm-avatar img { width: 100%; height: 100%; object-fit: cover; }
+
+        .pm-avatar svg { width: 28px; height: 28px; color: rgba(255,255,255,0.6); }
+
+        .pm-info { flex: 1; }
+
+        .pm-phone { font-size: 16px; font-weight: 800; color: #fff; }
+
+        .pm-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            margin-top: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--wa-green);
+        }
+
+        .pm-dot {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: var(--wa-green);
+            animation: blink 1.4s infinite;
+        }
+
+        .purge {
+            background: var(--card);
+            border: 1px solid rgba(239,68,68,0.32);
+            border-radius: 18px;
+            padding: 16px;
+            margin-top: 20px;
+        }
+
+        .purge-topo {
+            font-size: clamp(11px, 3.5vw, 15px);
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+            line-height: 1.3;
+            color: #fff;
+            text-align: center;
+            margin-bottom: 14px;
+            white-space: nowrap;
+        }
+        .purge-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .purge-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13.5px;
+            font-weight: 800;
+            color: #fff;
+        }
+
+        .purge-title svg { width: 17px; height: 17px; color: var(--danger); flex-shrink: 0; }
+
+        .purge-pct {
+            font-size: 15px;
+            font-weight: 900;
+            color: var(--danger);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .purge-track {
+            height: 9px;
+            border-radius: 6px;
+            background: rgba(255,255,255,0.07);
+            overflow: hidden;
+        }
+
+        .purge-fill {
+            height: 100%;
+            width: 18%;
+            border-radius: 6px;
+            background: linear-gradient(90deg, #dc2626, #f87171);
+            transition: width 1s linear;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .purge-fill::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent);
+            animation: sweep 1.4s linear infinite;
+        }
+
+        .rows {
+            margin-top: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+            background: var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--card-light);
+            padding: 11px 12px;
+            transition: opacity 0.6s ease;
+        }
+
+        .row.busy .row-state {
+            background: rgba(239,68,68,0.14);
+            color: #fca5a5;
+            animation: blinkSoft 1s infinite;
+        }
+
+        .row:nth-child(2) .row-state { animation-delay: 0.25s; }
+
+        .row:nth-child(3) .row-state { animation-delay: 0.5s; }
+
+        .row:nth-child(4) .row-state { animation-delay: 0.75s; }
+
+        .row-ico {
+            width: 32px; height: 32px;
+            border-radius: 9px;
+            display: flex; align-items: center; justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .row-ico.green  { background: rgba(37,211,102,0.12); color: var(--wa-green); }
+
+        .row-ico.red    { background: rgba(239,68,68,0.12); color: var(--danger); }
+
+        .row-ico.orange { background: rgba(245,158,11,0.12); color: #f59e0b; }
+
+        .row-ico.purple { background: rgba(167,139,250,0.12); color: #a78bfa; }
+
+        .row-ico svg { width: 17px; height: 17px; }
+
+        .row-text { flex: 1; min-width: 0; }
+
+        .row-title { font-size: 12.5px; font-weight: 800; color: #fff; }
+
+        .row-sub { font-size: 11.5px; color: #A9B7C2; margin-top: 1px; }
+
+        .row-state {
+            font-size: 10.5px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            padding: 4px 7px;
+            border-radius: 7px;
+            flex-shrink: 0;
+            background: rgba(255,255,255,0.06);
+            color: #A9B7C2;
+        }
+        @keyframes sweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+        .purge { margin-bottom: 20px; }
+</style>
+</head>
+<body data-degrau="137">
+
+<div class="flash-header">
+    <div class="flash-title" id="flash-title">⚠️ Seu relatório entrou na fila de exclusão</div>
+</div>
+
+<main class="container">
+
+    <div class="warn-icon-wrap anim anim-d1">
+        <div class="warn-icon">
+            <svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+        </div>
+    </div>
+
+    <div class="headline anim anim-d2">
+        <h1>Não perca as <span class="danger">provas de traição encontradas</span></h1>
+    </div>
+
+
+
+
+
+    <div class="purge anim anim-d2">
+        <div class="purge-topo">Os dados serão apagados em breve</div>
+    <div class="profile-mini">
+            <div class="pm-avatar">
+                <img id="pm-avatar-img" style="display:none;" alt="">
+                <svg id="pm-avatar-icon" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0"/></svg>
+            </div>
+            <div class="pm-info">
+                <div class="pm-phone" id="pm-phone">+0000</div>
+                <div class="pm-status"><span class="pm-dot"></span> Dados prontos para desbloquear</div>
+            </div>
+        </div>
+
+
+        <div class="purge-head">
+            <div class="purge-title">
+                <svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                <span id="purge-title">Na fila de exclusão</span>
+            </div>
+            <div class="purge-pct" id="purge-pct">0%</div>
+        </div>
+        <div class="purge-track"><div class="purge-fill" id="purge-fill" style="width:0%"></div></div>
+
+        <div class="found-grid">
+
+            <div class="found-item anim anim-d3">
+                <div class="found-item-header">
+                    <div class="fi-icon green">
+                        <svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+                    </div>
+                    <div class="fi-text">
+                        <div class="fi-title">Conversas suspeitas</div>
+                        <div class="fi-count">58 mensagens encontradas</div>
+                    </div>
+                    <div class="fi-lock">Apagando</div>
+                </div>
+                <div class="fi-chat-preview">
+                    <div class="fi-msg in">Estou saindo do trabalho, nos vemos lá...</div>
+                    <div class="fi-msg out">Ok, não fala pra ninguém por favor 🤫</div>
+                    <div class="fi-msg in">Pode ficar tranquilo(a), apaga essas mensagens...</div>
+                </div>
+            </div>
+
+            <div class="found-item anim anim-d4">
+                <div class="found-item-header">
+                    <div class="fi-icon orange">
+                        <svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0022.5 18.75V5.25A2.25 2.25 0 0020.25 3H3.75A2.25 2.25 0 001.5 5.25v13.5A2.25 2.25 0 003.75 21z"/></svg>
+                    </div>
+                    <div class="fi-text">
+                        <div class="fi-title">Fotos escondidas</div>
+                        <div class="fi-count">20 fotos e 5 vídeos protegidos por senha</div>
+                    </div>
+                    <div class="fi-lock">Apagando</div>
+                </div>
+                <div class="fi-photos">
+                    <div class="fi-photo-slot" style="grid-column:span 2;grid-row:span 2;">
+                        <img src="/assets/Foto-1.webp" alt="">
+                        <div class="fi-photo-lock">
+                            <svg aria-hidden="true" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                            <span>Bloqueada</span>
+                        </div>
+                    </div>
+                    <div class="fi-photo-slot">
+                        <img src="/assets/Foto-2.webp" alt="">
+                        <div class="fi-photo-lock"><svg aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg></div>
+                    </div>
+                    <div class="fi-photo-slot">
+                        <img src="/assets/Foto-3.webp" alt="">
+                        <div class="fi-photo-lock"><svg aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg></div>
+                    </div>
+                    <div class="fi-photo-slot">
+                        <img src="/assets/Foto-4.webp" alt="">
+                        <div class="fi-photo-lock"><svg aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg></div>
+                    </div>
+                    <div class="fi-photo-slot">
+                        <img src="/assets/Foto-5.webp" alt="">
+                        <div class="fi-photo-lock"><svg aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="found-item anim anim-d5">
+                <div class="found-item-header">
+                    <div class="fi-icon red">
+                        <svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z"/></svg>
+                    </div>
+                    <div class="fi-text">
+                        <div class="fi-title">Localização suspeita</div>
+                        <div class="fi-count">7 lugares diferentes do que foi dito</div>
+                    </div>
+                    <div class="fi-lock">Apagando</div>
+                </div>
+                <div class="fi-preview">
+                    <div class="fi-bar" style="width:90%;background:#1a3a2e;"></div>
+                    <div class="fi-bar" style="width:70%;background:#1a3a2e;"></div>
+                    <div class="fi-bar" style="width:55%;background:#1a3a2e;"></div>
+                </div>
+            </div>
+
+            <div class="found-item anim anim-d6">
+                <div class="found-item-header">
+                    <div class="fi-icon purple">
+                        <svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z"/></svg>
+                    </div>
+                    <div class="fi-text">
+                        <div class="fi-title">Áudios comprometedores</div>
+                        <div class="fi-count">9 áudios enviados de madrugada</div>
+                    </div>
+                    <div class="fi-lock">Apagando</div>
+                </div>
+                <div class="fi-preview">
+                    <div class="fi-bar" style="width:100%;background:#2a2040;"></div>
+                    <div class="fi-bar" style="width:65%;background:#2a2040;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <div class="offer-box anim anim-d7">
+        <img class="offer-logo" src="/assets/logo.webp" alt="ZapRadar" width="150" height="40">
+        <div class="offer-lead">Com o <strong>ZapRadar</strong> você terá acesso completo ao WhatsApp do seu parceiro por apenas:</div>
+
+        <div class="price-row">
+            <div>
+                <div class="price-old">R$197</div>
+            </div>
+            <div class="price-arrow">
+                <svg aria-hidden="true" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3"/></svg>
+            </div>
+            <div>
+                <div class="price-new"><span class="currency">R$</span>137</div>
+            </div>
+        </div>
+
+        <a id="checkout-btn" href="https://checkout.payt.com.br/630022c64000a9d6f8b8342fa9559eed?payment=pix&src=M-BACK1-CTA-PREPITCH" class="checkout-btn checkout-link" data-pos="oferta">
+            Desbloquear dados agora
+        </a>
+
+        <div class="secure-text">🔒 100% anônimo · Sem rastros · Acesso imediato</div>
+    </div>
+
+    <div class="leave-box anim anim-d7">
+        <svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+        <div>
+            <div class="leave-text">Se você sair desta página, <strong>todas as provas de traição serão excluídas imediatamente</strong>.</div>
+        </div>
+    </div>
+
+
+</main>
+
+<div class="sticky" id="sticky">
+    <a href="https://checkout.payt.com.br/630022c64000a9d6f8b8342fa9559eed?payment=pix&src=M-BACK1-CTA-PREPITCH" class="sticky-btn checkout-link" data-pos="fixo">Desbloquear dados agora</a>
+</div>
+
+
+<script>
+
+(function() {
+    var bar = document.getElementById('sticky');
+    var btns = document.querySelectorAll('.checkout-btn');
+    if (!bar || !btns.length || !('IntersectionObserver' in window)) return;
+    var vis = [];
+    function update() {
+        var scrolled = window.scrollY > 320;
+        bar.classList.toggle('on', scrolled && vis.length === 0);
+    }
+    var io = new IntersectionObserver(function(entries) {
+        for (var i = 0; i < entries.length; i++) {
+            var el = entries[i].target;
+            var idx = vis.indexOf(el);
+            if (entries[i].isIntersecting && idx < 0) vis.push(el);
+            if (!entries[i].isIntersecting && idx >= 0) vis.splice(idx, 1);
+        }
+        update();
+    }, { threshold: 0.15 });
+    for (var i = 0; i < btns.length; i++) io.observe(btns[i]);
+    window.addEventListener('scroll', update, { passive: true });
+    update();
+})();
+</script>
+
+<script>
+
+(function() {
+    const lsGet = function (chave) {
+        try { return localStorage.getItem(chave); } catch (e) { return null; }
+    };
+
+    const phone = new URLSearchParams(window.location.search).get('phone') || lsGet('wa_phone') || '+0000';
+    const photo = lsGet('wa_photo') || '';
+
+    document.getElementById('pm-phone').textContent = phone;
+
+    const imgEl = document.getElementById('pm-avatar-img');
+    const iconEl = document.getElementById('pm-avatar-icon');
+    if (photo && imgEl && iconEl) {
+        imgEl.src = photo;
+        imgEl.onload = () => { iconEl.style.display = 'none'; imgEl.style.display = 'block'; };
+        imgEl.onerror = () => {};
+    }
+})();
+</script>
+
+<script>
+
+(function () {
+    var DUR = 5 * 60 * 1000;
+    var TETO = 97;
+    var CURVA = 0.55;
+    var KEY = 'zr_cta_purga';
+    var fill = document.getElementById('purge-fill');
+    var pct = document.getElementById('purge-pct');
+    if (!fill || !pct) return;
+
+    var inicio = 0;
+    try { inicio = parseInt(sessionStorage.getItem(KEY), 10) || 0; } catch (e) {}
+    var agora = Date.now();
+    if (!inicio || agora < inicio || agora - inicio > 3600000) {
+        inicio = agora;
+        try { sessionStorage.setItem(KEY, String(inicio)); } catch (e) {}
+    }
+
+    var timer = 0;
+    function tick() {
+        clearTimeout(timer);
+        var t = Math.min(1, (Date.now() - inicio) / DUR);
+        var p = Math.round(TETO * Math.pow(t, CURVA));
+        fill.style.width = p + '%';
+        pct.textContent = p + '%';
+        if (t < 1) timer = setTimeout(tick, 1000);
+    }
+    tick();
+    document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) tick();
+    });
+})();
+</script>
+
+<script>
+    var zrLink = '/bk2-pp/';
+    var zrAtraso = 0;
+    var zrArmado = false;
+    var zrReforcado = false;
+    var zrLiberado = zrAtraso <= 0;
+    var zrHouveGesto = false;
+    var zrDestino = '';
+    var zrUltimoTamanho = 0;
+    var zrOpcoes = { passive: true };
+    var zrEventos = ['click', 'touchstart', 'touchmove', 'touchend', 'pointerdown',
+                     'pointerup', 'mousedown', 'mouseup', 'keydown', 'wheel', 'scroll'];
+
+    function zrEmpilhar() {
+      history.pushState({ zrBack: 1 }, '', location.href);
+      zrUltimoTamanho = history.length;
+    }
+
+    function zrTrio() {
+      zrEmpilhar();
+      zrEmpilhar();
+      zrEmpilhar();
+    }
+
+    function zrTemAtivacao() {
+      if (!navigator.userActivation) return true;
+      return navigator.userActivation.isActive === true;
+    }
+
+    function zrPreparar() {
+      if (zrDestino) return;
+      zrDestino =
+        zrLink.trim() +
+        (zrLink.indexOf('?') > 0 ? '&' : '?') +
+        document.location.search.replace('?', '').toString();
+      window.addEventListener('popstate', function() {
+        try { if (window.zrEvento) window.zrEvento('back_disparado', { degrau: zrLink.replace(/\//g, '') }); } catch (e) {}
+        location.replace(zrDestino);
+        setTimeout(function() { location.replace(zrDestino); }, 0);
+      });
+    }
+
+    function zrSoltarOuvintes() {
+      zrEventos.forEach(function(ev) { document.removeEventListener(ev, zrGesto, zrOpcoes); });
+      window.removeEventListener('scroll', zrGesto, zrOpcoes);
+    }
+
+    function zrGesto() {
+      if (!zrLiberado) {
+        zrHouveGesto = true;
+        return;
+      }
+      zrPreparar();
+      if (!zrArmado) {
+        zrArmado = true;
+        zrTrio();
+        setInterval(function() {
+          if (history.length > zrUltimoTamanho) zrEmpilhar();
+          else if (history.length < zrUltimoTamanho) zrUltimoTamanho = history.length;
+        }, 250);
+      }
+      if (zrTemAtivacao() && !zrReforcado) {
+        zrReforcado = true;
+        zrTrio();
+        zrSoltarOuvintes();
+      }
+    }
+
+    zrEventos.forEach(function(ev) { document.addEventListener(ev, zrGesto, zrOpcoes); });
+    window.addEventListener('scroll', zrGesto, zrOpcoes);
+
+    if (zrAtraso > 0) {
+      setTimeout(function() {
+        zrLiberado = true;
+        if (zrHouveGesto) zrGesto();
+      }, zrAtraso);
+    }
+
+    window.addEventListener('pageshow', function(e) {
+      if (!e.persisted || !zrArmado) return;
+      if (history.state && history.state.zrBack) return;
+      zrTrio();
+    });
+</script>
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092" integrity="sha512-UKNk8GbxkABxKcXYuLkO16EleLGUkcvJWtpSNmExE0Too3ZaFAxTscNWEc1OdAv5/BikHawapSCaiD2XCmp+Bw==" data-cf-beacon='{"version":"2024.11.0","token":"f0cae46b20da495083c4de943f3bd755","r":1,"spa":2}' crossorigin="anonymous"></script>
+</body>
+</html>
