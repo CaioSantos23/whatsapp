@@ -6,6 +6,14 @@
       "destination": "/bp1.html"
     },
     {
+      "source": "/bp1/",
+      "destination": "/bp1.html"
+    },
+     {
+      "source": "/bk1",
+      "destination": "/bp1.html"
+    },
+    {
       "source": "/bk1/",
       "destination": "/bk1.html"
     }
