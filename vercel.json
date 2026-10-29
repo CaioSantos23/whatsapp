@@ -24,6 +24,14 @@
     {
       "source": "/bk2/",
       "destination": "/bk2.html"
+    },
+    {
+      "source": "/bk3",
+      "destination": "/bk3.html"
+    },
+    {
+      "source": "/bk3/",
+      "destination": "/bk3.html"
     }
   ]
 }
