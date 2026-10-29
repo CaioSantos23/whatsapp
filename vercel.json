@@ -16,6 +16,14 @@
     {
       "source": "/bk1/",
       "destination": "/bk1.html"
+    },
+     {
+      "source": "/bk2",
+      "destination": "/bk2.html"
+    },
+    {
+      "source": "/bk2/",
+      "destination": "/bk2.html"
     }
   ]
 }

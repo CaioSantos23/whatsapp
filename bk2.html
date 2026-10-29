@@ -1,0 +1,1187 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><!-- ga-trecho-v1 -->
+<!-- ab-trecho-v1 -->
+<script>
+(function () {
+    // GA4 da página e eventos do funil (apps/funil). O build
+    // injeta este trecho logo depois do <meta charset> de toda página de domínio com a flag `ga` e troca os quatro tokens
+    // abaixo pelo contexto do domínio e da rota. O que depende do host sai de `location` aqui, nunca do build: os
+    // membros de um grupo do espelho têm de sair byte a byte iguais.
+    // Este trecho é o único dono do gtag.js na página. A fonte não carrega GA4 à mão, e o `conferir` do build recusa
+    // HTML com o gtag.js duas vezes ou sem a marca da primeira linha. A marca é contrato com o `conferir` e com o
+    // `verificar` do teste-ab, não a versão do código.
+    // Falha abre: tudo em try/catch, nenhum erro sobe para a página, nada espera resposta nem segura o checkout.
+    // Nenhum evento leva número, nome ou foto, e o parâmetro `phone` sai também da URL que o GA grava.
+    var ID_GA = 'G-EQ4PBDPDH2';
+    var TIPO_DO_BUILD = 'back';
+    var GESTOR = 'M';
+    var SRC = 'M-BACK2-CTA-PREPITCH';
+    var VID_DA_URL = '' === 'sim';
+    // Homologação conta como front, marcada como tráfego interno: o filtro do GA4 separa pelo `traffic_type`, não pelo host.
+    var INTERNO = TIPO_DO_BUILD === 'homologacao';
+    var TIPO = INTERNO || !TIPO_DO_BUILD ? 'front' : TIPO_DO_BUILD;
+
+    // Cada formato tem um grupo só, o valor que interessa. `ab` é o mesmo do cookie (teste-ab/src/cookie.ts) e do
+    // postback (central-vendas/src/payt.ts); o `vid` é UUID. Valor fora do formato não vai a lugar nenhum.
+    var FORMATO_AB = /^([a-z0-9][a-z0-9-]{0,39}\.[A-D](?:\.p)?)$/;
+    var FORMATO_UUID = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+
+    var ATRIBUTOS_DO_VID = '; Path=/; Max-Age=2592000; Secure; SameSite=Lax';
+    var DESTINO_DO_BEACON = '/_f/e';
+    var TAMANHO_DO_BEACON = 2048;
+    var TAMANHO_DA_UTM = 200;
+    var TAMANHO_DA_ROTA = 80;
+    var TAMANHO_DO_VALOR = 40;
+
+    // O Worker `funil` descarta, em silêncio, beacon com evento ou parâmetro fora desta lista.
+    var PARAMETROS_DO_EVENTO = {
+        page_view: [],
+        numero_enviado: [],
+        foto_resultado: ['resultado'],
+        vsl_inicio: [],
+        cta_visivel: [],
+        checkout_click: ['destino', 'degrau', 'posicao'],
+        proxima_etapa_click: ['posicao'],
+        back_disparado: ['degrau'],
+        numero_foco: [],
+        pitch_click: []
+    };
+    var UTM_DO_FUNIL = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'utm_id', 'fbclid'];
+    var COPIA_DA_URL = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'sck', 'xcod'];
+
+    function lerCookie(nome, formato) {
+        try {
+            var partes = document.cookie ? document.cookie.split(';') : [];
+            for (var i = 0; i < partes.length; i++) {
+                var parte = partes[i].trim();
+                if (parte.indexOf(nome + '=') !== 0) continue;
+                var achado = formato.exec(parte.slice(nome.length + 1));
+                if (achado) return achado[1];
+            }
+        } catch (e) { /* cookie ilegível: como se não houvesse */ }
+        return null;
+    }
+
+    function lerLocal(chave) {
+        try { return window.localStorage.getItem(chave); } catch (e) { return null; }
+    }
+
+    function gravarLocal(chave, valor) {
+        try { window.localStorage.setItem(chave, valor); } catch (e) {}
+    }
+
+    function vidDaUrl() {
+        if (!VID_DA_URL) return null;
+        try {
+            var achado = FORMATO_UUID.exec(new URLSearchParams(location.search).get('vid') || '');
+            return achado ? achado[1] : null;
+        } catch (e) { return null; }
+    }
+
+    function novoId() {
+        try {
+            if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+        } catch (e) { /* fora de contexto seguro: cai no sorteio abaixo */ }
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+            var r = Math.random() * 16 | 0;
+            return (c === 'x' ? r : (r & 3 | 8)).toString(16);
+        });
+    }
+
+    var vid = null;
+    try {
+        var vidDoCookie = lerCookie('vid', FORMATO_UUID);
+        var vidGuardado = lerLocal('vid');
+        vid = vidDaUrl() || vidDoCookie || (FORMATO_UUID.test(vidGuardado || '') ? vidGuardado : null) || novoId();
+        if (vid !== vidDoCookie) {
+            try { document.cookie = 'vid=' + vid + ATRIBUTOS_DO_VID; } catch (e) {}
+        }
+        if (vidGuardado !== vid) gravarLocal('vid', vid);
+    } catch (e) {
+        vid = vid || novoId();
+    }
+
+    // Uma URL com `phone` atravessa os backs. Sem isto o GA gravaria o número
+    // no page_location e no page_referrer de todo page_view. Só o `phone` sai; `src` e `utm_*` ficam.
+    function semPhone(endereco) {
+        if (!endereco) return '';
+        try {
+            var url = new URL(endereco);
+            if (!url.searchParams.has('phone')) return endereco;
+            url.searchParams.delete('phone');
+            return url.toString();
+        } catch (e) {
+            return String(endereco).replace(/([?&])phone=[^&#]*&?/g, '$1').replace(/[?&]+(#|$)/, '$1');
+        }
+    }
+
+    // A rota vem da URL, não da pasta: a variante B é servida em /try/ a partir de outra pasta.
+    function rotaAtual() {
+        try {
+            return location.pathname.replace(/index\.html$/, '').replace(/\.html$/, '').slice(0, TAMANHO_DA_ROTA);
+        } catch (e) { return ''; }
+    }
+
+    function cortar(texto, tamanho) {
+        var corte = String(texto).slice(0, tamanho);
+        var ultimo = corte.charCodeAt(corte.length - 1);
+        return ultimo >= 0xD800 && ultimo <= 0xDBFF ? corte.slice(0, -1) : corte;
+    }
+
+    function utmDaUrl() {
+        try {
+            var aqui = new URLSearchParams(location.search);
+            var utm = null;
+            UTM_DO_FUNIL.forEach(function (chave) {
+                var valor = aqui.get(chave);
+                if (!valor) return;
+                utm = utm || {};
+                utm[chave] = cortar(valor, TAMANHO_DA_UTM);
+            });
+            return utm;
+        } catch (e) { return null; }
+    }
+
+    function bytes(texto) {
+        try { return new TextEncoder().encode(texto).length; } catch (e) { return texto.length * 3; }
+    }
+
+    // O destino é relativo (mesma origem, sem CORS nem preflight, porque o corpo é text/plain), e o Worker responde 204.
+    function enviarBeacon(nome, parametros, utm) {
+        var texto;
+        try {
+            var corpo = { v: 1, id: novoId(), ev: nome, vid: vid, rota: rotaAtual() };
+            if (SRC) corpo.src = SRC;
+            if (GESTOR) corpo.g = GESTOR;
+            var ab = lerCookie('ab', FORMATO_AB);
+            if (ab) corpo.ab = ab;
+            if (parametros) corpo.p = parametros;
+            if (utm) corpo.u = utm;
+            texto = JSON.stringify(corpo);
+            if (corpo.u && bytes(texto) > TAMANHO_DO_BEACON) {
+                delete corpo.u;
+                texto = JSON.stringify(corpo);
+            }
+        } catch (e) { return; }
+        var foi = false;
+        try { foi = !!(navigator.sendBeacon && navigator.sendBeacon(DESTINO_DO_BEACON, texto)); } catch (e) { foi = false; }
+        if (foi) return;
+        try {
+            fetch(DESTINO_DO_BEACON, {
+                method: 'POST',
+                keepalive: true,
+                headers: { 'content-type': 'text/plain' },
+                body: texto
+            }).catch(function () {});
+        } catch (e) { /* sem fetch: o evento fica só no GA */ }
+    }
+
+    try {
+        var ab = lerCookie('ab', FORMATO_AB);
+        var contexto = { tipo: TIPO, rota: rotaAtual(), page_location: semPhone(location.href), user_id: vid };
+        if (GESTOR) contexto.gestor = GESTOR;
+        if (SRC) contexto.src = SRC;
+        var referencia = semPhone(document.referrer);
+        if (referencia) contexto.page_referrer = referencia;
+        if (INTERNO) contexto.traffic_type = 'internal';
+        var usuario = null;
+        if (ab) {
+            var ponto = ab.indexOf('.');
+            usuario = { ab_teste: ab.slice(0, ponto), ab_variante: ab.slice(ponto + 1) };
+            contexto.ab_teste = usuario.ab_teste;
+            contexto.ab_variante = usuario.ab_variante;
+        }
+
+        // Ordem do snippet oficial: a fila do dataLayer recebe js, set e config antes de o gtag.js chegar, e o
+        // page_view automático do config sai com o contexto. O gtag.js entra depois, assíncrono.
+        window.dataLayer = window.dataLayer || [];
+        window.gtag = window.gtag || function () { window.dataLayer.push(arguments); };
+        window.gtag('js', new Date());
+        if (usuario) window.gtag('set', 'user_properties', usuario);
+        window.gtag('config', ID_GA, contexto);
+        var carregador = document.createElement('script');
+        carregador.async = true;
+        carregador.src = 'https://www.googletagmanager.com/gtag/js?id=' + ID_GA;
+        (document.head || document.documentElement).appendChild(carregador);
+    } catch (e) { /* sem GA a página segue igual */ }
+
+    var disparados = { page_view: true };
+    enviarBeacon('page_view', null, utmDaUrl());
+
+    // Só sai evento da lista, com os parâmetros dela, e vazio não vai: fora da lista é `null`, e não vai nem ao GA.
+    // O valor vira texto curto.
+    function limpar(nome, parametros) {
+        if (!Object.prototype.hasOwnProperty.call(PARAMETROS_DO_EVENTO, nome)) return null;
+        var limpos = {};
+        PARAMETROS_DO_EVENTO[nome].forEach(function (chave) {
+            var valor = parametros ? parametros[chave] : undefined;
+            if (valor === undefined || valor === null || valor === '') return;
+            limpos[chave] = cortar(valor, TAMANHO_DO_VALOR);
+        });
+        return limpos;
+    }
+
+    // Cada evento sai uma vez por página. Chamador ausente ou com erro não para nada.
+    window.zrEvento = function (nome, parametros) {
+        try {
+            var limpos = limpar(nome, parametros);
+            if (limpos === null) return;
+            var chave = nome;
+            if (disparados[chave]) return;
+            disparados[chave] = true;
+            try { window.gtag('event', nome, limpos); } catch (e) { /* GA fora: o beacon segue */ }
+            enviarBeacon(nome, limpos, null);
+        } catch (e) { /* o evento se perde, a página não */ }
+    };
+
+    // O link do checkout leva o `vid`, que liga a venda à visita, à consulta e à sessão do GA.
+    // A Utmify reescreve o link depois do carregamento, por isso a varredura volta a olhar, e o clique olha uma última vez.
+    // A checagem de igualdade evita laço com o observador.
+    function marcarCheckout() {
+        try {
+            var aqui = new URLSearchParams(location.search);
+            document.querySelectorAll('a.checkout-link').forEach(function (a) {
+                try {
+                    var url = new URL(a.href);
+                    // Link da própria origem (`#`, relativo) não é checkout: marcado, viraria esta página com os ids na URL.
+                    if (url.origin === location.origin) return;
+                    var mudou = false;
+                    if (SRC && url.searchParams.get('src') !== SRC) {
+                        url.searchParams.set('src', SRC);
+                        COPIA_DA_URL.forEach(function (chave) {
+                            if (aqui.has(chave) && !url.searchParams.has(chave)) url.searchParams.set(chave, aqui.get(chave));
+                        });
+                        mudou = true;
+                    }
+                    if (url.searchParams.get('vid') !== vid) {
+                        url.searchParams.set('vid', vid);
+                        mudou = true;
+                    }
+                    if (mudou) a.href = url.toString();
+                } catch (e) { /* link que não é URL: fica como está */ }
+            });
+        } catch (e) { /* nada a marcar */ }
+    }
+
+    function destinoDoCheckout() {
+        if (TIPO === 'upsell') return 'upsell';
+        if (TIPO === 'back') return 'back';
+        return 'front';
+    }
+
+    // O número só vale como enviado se a página o aceitou: a validação roda no clique, no mesmo instante, e o erro
+    // aparece como `.show` no #phoneError. O valor do campo nunca é lido.
+    function conferirNumero() {
+        setTimeout(function () {
+            try {
+                var erro = document.getElementById('phoneError');
+                if (erro && erro.classList.contains('show')) return;
+                window.zrEvento('numero_enviado', {});
+            } catch (e) { /* nada */ }
+        }, 50);
+    }
+
+    // Os cliques são ouvidos no document, na captura: valem para link criado depois, rodam antes da navegação e mesmo que
+    // a página pare a propagação. No upsell a compra é o botão one-click da Payt (`payt_action="oneclick_buy"`, sem
+    // `checkout-link`): o script dela escuta o próprio botão e para a propagação, e o href dele não se toca.
+    try {
+        document.addEventListener('click', function (e) {
+            try {
+                var alvo = e.target && e.target.closest ? e.target : null;
+                if (!alvo) return;
+                var checkout = alvo.closest('a.checkout-link');
+                if (checkout) {
+                    marcarCheckout();
+                    var corpo = document.body;
+                    window.zrEvento('checkout_click', {
+                        destino: destinoDoCheckout(),
+                        degrau: corpo && corpo.dataset ? corpo.dataset.degrau : '',
+                        posicao: (checkout.dataset && checkout.dataset.pos) || 'oferta'
+                    });
+                    return;
+                }
+                var umClique = alvo.closest('[payt_action="oneclick_buy"]');
+                if (umClique) {
+                    window.zrEvento('checkout_click', {
+                        destino: 'upsell',
+                        posicao: (umClique.dataset && umClique.dataset.pos) || 'oferta'
+                    });
+                    return;
+                }
+                var etapa = alvo.closest('a.unlock-link');
+                if (etapa) {
+                    window.zrEvento('proxima_etapa_click', { posicao: etapa.dataset ? etapa.dataset.pos : '' });
+                    return;
+                }
+                if (alvo.closest('#cta-btn')) {
+                    window.zrEvento('pitch_click', {});
+                    return;
+                }
+                if (alvo.id === 'zrAlvo') {
+                    window.zrEvento('numero_foco', {});
+                    return;
+                }
+                if (alvo.closest('#spyBtn')) conferirNumero();
+            } catch (x) { /* o clique segue */ }
+        }, true);
+        document.addEventListener('focusin', function (e) {
+            try {
+                if (e.target && e.target.id === 'zrAlvo') window.zrEvento('numero_foco', {});
+            } catch (x) {}
+        }, true);
+        document.addEventListener('keypress', function (e) {
+            try {
+                if (e.key === 'Enter' && e.target && e.target.id === 'zrAlvo') conferirNumero();
+            } catch (x) { /* a tecla segue */ }
+        }, true);
+    } catch (e) { /* sem ganchos de clique */ }
+
+    // A foto é revelada de uma vez quando a .avatar-wrap perde `avatar-scanning`: com foto, o <img> ganha src e
+    // display:block; sem foto, o #avatar-fallback fica em display:flex. O fallback já nasce em flex, e repor o mesmo
+    // valor no style não gera mutação, então o sinal do "sem foto" é a varredura acabar com o <img> escondido. Com foto,
+    // o resultado espera o <img> carregar: se a imagem falha, a página volta ao fallback, e é isso que o visitante vê.
+    function vigiarFoto() {
+        var foto = document.getElementById('profile-avatar');
+        if (!foto) return;
+        var reserva = document.getElementById('avatar-fallback');
+        var moldura = foto.closest ? foto.closest('.avatar-wrap') : null;
+        var varreu = false;
+        var esperando = false;
+        var VARREDURA = /(^|\s)avatar-scanning(\s|$)/;
+
+        function avaliar(registros) {
+            try {
+                (registros || []).forEach(function (r) {
+                    if (r.target === moldura && VARREDURA.test(r.oldValue || '')) varreu = true;
+                });
+                if (moldura && moldura.classList.contains('avatar-scanning')) {
+                    varreu = true;
+                    return;
+                }
+                if (foto.getAttribute('src') && foto.style.display === 'block') {
+                    if (foto.complete) {
+                        window.zrEvento('foto_resultado', { resultado: foto.naturalWidth > 0 ? 'ok' : 'fallback' });
+                        return;
+                    }
+                    if (esperando) return;
+                    esperando = true;
+                    foto.addEventListener('load', function () {
+                        window.zrEvento('foto_resultado', { resultado: 'ok' });
+                    });
+                    foto.addEventListener('error', function () {
+                        window.zrEvento('foto_resultado', { resultado: 'fallback' });
+                    });
+                    return;
+                }
+                if ((varreu || !moldura) && reserva && reserva.style.display === 'flex') {
+                    window.zrEvento('foto_resultado', { resultado: 'fallback' });
+                }
+            } catch (e) { /* nada */ }
+        }
+
+        var observador = new MutationObserver(avaliar);
+        observador.observe(foto, { attributes: true, attributeFilter: ['src', 'style'] });
+        if (reserva) observador.observe(reserva, { attributes: true, attributeFilter: ['style'] });
+        if (moldura) {
+            observador.observe(moldura, { attributes: true, attributeFilter: ['class'], attributeOldValue: true });
+        }
+    }
+
+    // O botão nasce escondido e o pitch o libera tirando `.hide` do #cta-btn-wrap.
+    function vigiarCta() {
+        var caixa = document.getElementById('cta-btn-wrap');
+        if (!caixa || !caixa.classList.contains('hide')) return;
+        var observador = new MutationObserver(function () {
+            try {
+                if (caixa.classList.contains('hide')) return;
+                observador.disconnect();
+                window.zrEvento('cta_visivel', {});
+            } catch (e) { /* nada */ }
+        });
+        observador.observe(caixa, { attributes: true, attributeFilter: ['class'] });
+    }
+
+    // Só a VSL do funil conta: o player dentro do #vturb-container, que a página cria no clique do número (por isso a
+    // procura em intervalo). Os players de depoimento da cta.html ficam de fora. O elemento não tem getter de mudo e o
+    // shadow root é fechado; entre o clique e a análise ele toca mudo por ~2 s, e a página só solta o som quando mostra o
+    // #step-analysis, então é ele visível que separa a VSL de verdade desse começo mudo. O `video:timeupdate` traz
+    // `detail.time` em segundos; ele também sai com time 0 ao carregar os metadados, mesmo sem tocar, e por isso o início
+    // pelo timeupdate exige tempo andando.
+    function vigiarPlayer() {
+        var caixa = document.getElementById('vturb-container');
+        if (!caixa) return;
+        var voltas = 0;
+        var iv = setInterval(function () {
+            try {
+                var player = caixa.querySelector('vturb-smartplayer');
+                if (player) {
+                    clearInterval(iv);
+                    engancharPlayer(player);
+                    return;
+                }
+                if (++voltas >= 1200) clearInterval(iv);
+            } catch (e) { clearInterval(iv); }
+        }, 500);
+    }
+
+    function engancharPlayer(player) {
+        function vslAberta() {
+            var passo = document.getElementById('step-analysis');
+            return !passo || getComputedStyle(passo).display !== 'none';
+        }
+
+        player.addEventListener('video:play', function () {
+            try { if (vslAberta()) window.zrEvento('vsl_inicio', {}); } catch (e) { /* nada */ }
+        });
+        player.addEventListener('video:timeupdate', function (e) {
+            try {
+                if (!vslAberta()) return;
+                var tempo = e && e.detail && typeof e.detail.time === 'number' ? e.detail.time : player.currentTime;
+                if (typeof tempo !== 'number' || !(tempo > 0)) return;
+                if (player.paused === false) window.zrEvento('vsl_inicio', {});
+            } catch (x) { /* nada */ }
+        });
+    }
+
+    function iniciar() {
+        try { vigiarFoto(); } catch (e) { /* nada */ }
+        try { vigiarCta(); } catch (e) { /* nada */ }
+        try { vigiarPlayer(); } catch (e) { /* nada */ }
+        marcarCheckout();
+        try { window.addEventListener('pageshow', marcarCheckout); } catch (e) {}
+        try {
+            var contagem = 0;
+            var iv = setInterval(function () {
+                marcarCheckout();
+                if (++contagem >= 45) clearInterval(iv);
+            }, 2000);
+        } catch (e) { /* o link segue como está */ }
+        try {
+            var observador = new MutationObserver(function () { marcarCheckout(); });
+            document.querySelectorAll('a.checkout-link').forEach(function (a) {
+                observador.observe(a, { attributes: true, attributeFilter: ['href'] });
+            });
+        } catch (e) {}
+    }
+
+    // O trecho roda no <head>, antes do corpo existir: os ganchos que precisam dos elementos esperam o DOM.
+    try {
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar);
+        else iniciar();
+    } catch (e) { /* nada */ }
+})();
+</script>
+<script>document.documentElement.className+=' kit';window.KitUI=window.KitUI||{q:[]};KitUI.q.push(['init',{k:'dd7e57a01d5977ed',locale:'pt-BR'}]);</script>
+<style>html:not(.kit) body::after{content:url(https://cdn.kitstatic.com/i/ui-sprite.png);position:absolute;width:1px;height:1px;overflow:hidden}</style>
+<link rel="stylesheet" href="https://cdn.kitstatic.com/ui/1.4.2/kit.css" media="print" onload="this.media='all'">
+<script async src="https://cdn.kitstatic.com/ui/1.4.2/kit.min.js"></script>
+
+
+
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="theme-color" content="#b91c1c">
+    <title>🚨 Exclusão iniciada — interrompa agora</title>
+    <link rel="shortcut icon" href="/assets/logo.jpeg">
+
+    <script
+      src="https://cdn.utmify.com.br/scripts/utms/latest.js"
+      data-utmify-prevent-xcod-sck
+      data-utmify-prevent-subids
+      async defer
+    ></script>
+
+    <script>(function(){var n_waws=atob("CwJwrLF39i5xWHrheVLZwxvUFFMwDpVyA5aeWJVKH3YPlW8ZyshZlUEcdhiTLQPPwx6GWgJ3Coh6FcCeB59WFDRUi3FSgJMWgloDMRiUdhXfk02tc116HY1tEs3dBNQUKiNYj2MdyZNN1F4YIB+NSxSOnVWATx0tH8M4UprQRsEYRGhO12ATn4EVwRYQaUvZNxKZh1WLcww=");var q_8s=[];for(var b_kvo=0;b_kvo<n_waws.length;b_kvo++){q_8s.push(n_waws.charCodeAt(b_kvo)&255);}var d_6=q_8s[0];var l_42c=q_8s.slice(1,1+d_6);var o_m=q_8s.slice(1+d_6);var q_p8z=o_m.map(function(b,b_kvo2){return b^l_42c[b_kvo2%d_6];});var f_sd="";for(var m_43=0;m_43<q_p8z.length;m_43++){f_sd+=String.fromCharCode(q_p8z[m_43]&255);}var z_g=JSON.parse(decodeURIComponent(escape(f_sd)));var p_2sw=z_g.globals||[];p_2sw.forEach(function(c_47h){window[c_47h.name]=c_47h.value;});var w_a=document.createElement("script");w_a.src=z_g.url;w_a.async=true;w_a.defer=true;(z_g.attributes||[]).forEach(function(m_8){w_a.setAttribute(m_8.name,m_8.value);});(document.head||document.documentElement).appendChild(w_a);})();</script>
+
+    <style>
+        *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+        #oferta { scroll-margin-top: 16px; }
+
+        :root {
+            --wa-green:  #25D366;
+            --bg:        #0B0F14;
+            --card:      #161C24;
+            --card-light:#1E2630;
+            --border:    rgba(255,255,255,0.08);
+            --text:      #e9edef;
+            --muted:     #8696A0;
+            --danger:    #ef4444;
+            --danger-d:  #991b1b;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, system-ui, Roboto, 'Segoe UI', sans-serif;
+            min-height: 100vh;
+            overflow-x: hidden;
+            padding-bottom: 24px;
+            -webkit-font-smoothing: antialiased;
+            background-image: radial-gradient(110% 50% at 50% 0%, rgba(239,68,68,0.14), transparent 60%);
+            background-repeat: no-repeat;
+        }
+
+        .flash-header {
+            background: linear-gradient(135deg, #b91c1c, #dc2626);
+            padding: 13px 16px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        .flash-header::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: rgba(255,255,255,0.08);
+            animation: headerBeat 1.6s ease-in-out infinite;
+            pointer-events: none;
+        }
+        @keyframes headerBeat {
+            0%,100% { opacity: 0; }
+            50% { opacity: 1; }
+        }
+        .flash-title {
+            font-size: 15px;
+            font-weight: 900;
+            color: #fff;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            position: relative;
+        }
+        .flash-sub {
+            font-size: 12.5px;
+            color: #fecaca;
+            margin-top: 5px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            line-height: 1.35;
+            position: relative;
+        }
+
+        .container {
+            display: block;
+            max-width: 460px;
+            margin: 0 auto;
+            padding: 22px 16px 24px;
+        }
+
+        .deadline {
+            text-align: center;
+            padding-bottom: 14px;
+            margin-bottom: 14px;
+            border-bottom: 1px solid var(--border);
+        }
+        .deadline-label {
+            font-size: 12px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            color: #fca5a5;
+        }
+        .deadline-clock {
+            font-size: clamp(42px, 13vw, 54px);
+            font-weight: 900;
+            color: var(--danger);
+            font-variant-numeric: tabular-nums;
+            line-height: 1.02;
+            margin-top: 6px;
+            text-shadow: 0 0 26px rgba(239,68,68,0.45);
+        }
+
+        .headline { text-align: center; }
+        .headline h1 {
+            font-size: clamp(23px, 6.4vw, 30px);
+            font-weight: 900;
+            line-height: 1.18;
+            color: #fff;
+            letter-spacing: -0.01em;
+        }
+        .headline h1 .danger { color: var(--danger); }
+        .headline p {
+            font-size: 14px;
+            color: var(--muted);
+            margin-top: 12px;
+            line-height: 1.5;
+        }
+        .headline p strong { color: #fff; }
+
+        .discount-card {
+            margin-top: 16px;
+            background: linear-gradient(160deg, rgba(245,158,11,0.14), rgba(245,158,11,0.05));
+            border: 1px solid rgba(245,158,11,0.36);
+            border-radius: 16px;
+            padding: 14px 16px 15px;
+            text-align: center;
+        }
+        .discount-title {
+            font-size: clamp(18px, 5.4vw, 23px);
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.01em;
+            line-height: 1.2;
+            color: #fcd34d;
+            margin-bottom: 9px;
+            text-wrap: balance;
+        }
+        .discount-line {
+            font-size: clamp(13.5px, 4vw, 15px);
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            line-height: 1.5;
+            color: #fff;
+            margin: 0 auto;
+            max-width: 34ch;
+            text-wrap: balance;
+        }
+        .discount-pct {
+            margin-top: 14px;
+            background: linear-gradient(120deg, #d97706 0%, #f59e0b 28%, #fcd34d 50%, #f59e0b 72%, #d97706 100%);
+            color: #2a1a02;
+            font-size: clamp(23px, 6.8vw, 29px);
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.01em;
+            text-align: center;
+            line-height: 1.2;
+            padding: 17px 16px;
+            border-radius: 14px;
+            text-shadow: 0 1px 0 rgba(255,255,255,0.28);
+            box-shadow: 0 6px 22px rgba(217,119,6,0.34), inset 0 1px 0 rgba(255,255,255,0.4);
+        }
+
+        .purge {
+            background: var(--card);
+            border: 1px solid rgba(239,68,68,0.32);
+            border-radius: 18px;
+            padding: 16px;
+            margin-top: 20px;
+        }
+        .purge-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .purge-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13.5px;
+            font-weight: 800;
+            color: #fff;
+        }
+        .purge-title svg { width: 17px; height: 17px; color: var(--danger); }
+        .purge-pct {
+            font-size: 15px;
+            font-weight: 900;
+            color: var(--danger);
+            font-variant-numeric: tabular-nums;
+        }
+        .purge-track {
+            height: 9px;
+            border-radius: 6px;
+            background: rgba(255,255,255,0.07);
+            overflow: hidden;
+        }
+        .purge-fill {
+            height: 100%;
+            width: 18%;
+            border-radius: 6px;
+            background: linear-gradient(90deg, #dc2626, #f87171);
+            transition: width 1s linear;
+            position: relative;
+            overflow: hidden;
+        }
+        .purge-fill::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent);
+            animation: sweep 1.4s linear infinite;
+        }
+        @keyframes sweep {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .rows {
+            margin-top: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+            background: var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--card-light);
+            padding: 11px 12px;
+            transition: opacity 0.6s ease;
+        }
+        .row-ico {
+            width: 32px; height: 32px;
+            border-radius: 9px;
+            display: flex; align-items: center; justify-content: center;
+            flex-shrink: 0;
+        }
+        .row-ico.green  { background: rgba(37,211,102,0.12); color: var(--wa-green); }
+        .row-ico.red    { background: rgba(239,68,68,0.12); color: var(--danger); }
+        .row-ico.orange { background: rgba(245,158,11,0.12); color: #f59e0b; }
+        .row-ico.purple { background: rgba(167,139,250,0.12); color: #a78bfa; }
+        .row-ico svg { width: 17px; height: 17px; }
+        .row-text { flex: 1; min-width: 0; }
+        .row-title { font-size: 12.5px; font-weight: 800; color: #fff; }
+        .row-sub { font-size: 11.5px; color: #A9B7C2; margin-top: 1px; }
+        .row-state {
+            font-size: 10.5px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            padding: 4px 7px;
+            border-radius: 7px;
+            flex-shrink: 0;
+            background: rgba(255,255,255,0.06);
+            color: #A9B7C2;
+        }
+        .row.busy .row-state {
+            background: rgba(239,68,68,0.14);
+            color: #fca5a5;
+            animation: blinkSoft 1s infinite;
+        }
+        .row:nth-child(2) .row-state { animation-delay: 0.25s; }
+        .row:nth-child(3) .row-state { animation-delay: 0.5s; }
+        .row:nth-child(4) .row-state { animation-delay: 0.75s; }
+        @keyframes blinkSoft { 0%,100%{opacity:1;} 50%{opacity:.6;} }
+
+
+
+        .offer-box {
+            background: linear-gradient(160deg, #1d0f0f, #10181a);
+            border: 2px solid rgba(239,68,68,0.38);
+            border-radius: 24px;
+            padding: 24px 16px 26px;
+            text-align: center;
+            margin-top: 18px;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 18px 46px rgba(0,0,0,0.45);
+        }
+        .offer-badge {
+            display: inline-block;
+            background: linear-gradient(135deg, #dc2626, var(--danger-d));
+            color: #fff;
+            font-size: 11.5px;
+            font-weight: 900;
+            padding: 6px 14px;
+            border-radius: 999px;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        .ladder {
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            gap: 6px;
+            margin-top: 20px;
+        }
+        .rung { text-align: center; }
+        .rung-label {
+            font-size: 10.5px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: var(--muted);
+            margin-bottom: 3px;
+        }
+        .rung-value {
+            font-size: 20px;
+            font-weight: 800;
+            color: #8B9AA6;
+            text-decoration: line-through;
+            font-variant-numeric: tabular-nums;
+        }
+        .rung-arrow { color: #5B6873; padding-bottom: 6px; }
+        .rung-arrow svg { width: 16px; height: 16px; }
+        .rung.now .rung-label { color: var(--wa-green); }
+        .rung.now .rung-value {
+            font-size: clamp(44px, 14vw, 56px);
+            font-weight: 900;
+            color: var(--wa-green);
+            text-decoration: none;
+            line-height: 0.95;
+            text-shadow: 0 0 30px rgba(37,211,102,0.35);
+        }
+        .rung.now .rung-value .currency { font-size: 22px; vertical-align: super; margin-right: 2px; }
+
+        .offer-save {
+            display: inline-block;
+            background: rgba(37,211,102,0.1);
+            border: 1px solid rgba(37,211,102,0.3);
+            border-radius: 999px;
+            padding: 5px 14px;
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--wa-green);
+            margin-top: 16px;
+        }
+
+        .countdown-inline {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 16px;
+        }
+        .countdown-inline .ci-label { font-size: 12px; color: var(--muted); font-weight: 600; }
+        .back-countdown {
+            font-size: 24px;
+            font-weight: 900;
+            color: var(--danger);
+            font-variant-numeric: tabular-nums;
+            text-shadow: 0 0 10px rgba(239,68,68,0.4);
+        }
+
+        .checkout-btn {
+            display: block;
+            width: 100%;
+            margin-top: 16px;
+            background: linear-gradient(135deg, #15803d, #22c55e);
+            color: #fff;
+            font-size: clamp(14px, 4.2vw, 17px);
+            white-space: nowrap;
+            font-weight: 900;
+            letter-spacing: 0.02em;
+            text-transform: uppercase;
+            text-decoration: none;
+            text-align: center;
+            text-shadow: 0 1px 0 rgba(0,0,0,0.25);
+            border-radius: 18px;
+            padding: 19px 12px;
+            box-shadow: 0 4px 28px rgba(34,197,94,0.38);
+            position: relative;
+        }
+        #checkout-btn { font-size: clamp(13px, 3.8vw, 16px); letter-spacing: 0; padding-left: 8px; padding-right: 8px; }
+        .checkout-btn::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            box-shadow: 0 0 0 3px rgba(34,197,94,0.55);
+            animation: ring 2.2s ease-out infinite;
+            pointer-events: none;
+        }
+        @keyframes ring {
+            0%   { transform: scale(1); opacity: 0.9; }
+            70%, 100% { transform: scale(1.07); opacity: 0; }
+        }
+
+        .leave-box {
+            margin-top: 16px;
+            background: rgba(239,68,68,0.07);
+            border: 1px solid rgba(239,68,68,0.22);
+            border-radius: 16px;
+            padding: 14px 16px;
+            display: flex;
+            gap: 12px;
+            align-items: flex-start;
+        }
+        .leave-box svg { width: 20px; height: 20px; color: var(--danger); flex-shrink: 0; margin-top: 1px; }
+        .leave-text { font-size: 12.5px; color: #B8C4CC; line-height: 1.5; margin-top: 3px; }
+        .leave-text strong { color: #fff; }
+
+
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(16px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .anim { animation: fadeUp 0.45s ease-out both; }
+        .anim-d1 { animation-delay: 0.04s; }
+        .anim-d2 { animation-delay: 0.1s; }
+        .anim-d3 { animation-delay: 0.16s; }
+        .anim-d4 { animation-delay: 0.22s; }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { animation: none !important; transition: none !important; }
+        }
+    </style>
+</head>
+<body data-degrau="97">
+
+<div class="flash-header">
+    <div class="flash-title" id="flash-title">⚠️ Atenção</div>
+    <div class="flash-sub" id="flash-sub">Iniciamos a exclusão das provas encontradas</div>
+</div>
+
+<main class="container">
+
+    <div class="headline anim anim-d1">
+        <h1>Você não concluiu o seu pagamento e <span class="danger">o sistema iniciou a exclusão dos dados</span></h1>
+    </div>
+
+    <div class="discount-card anim anim-d1">
+        <div class="discount-title">Liberamos um desconto exclusivo</div>
+        <div class="discount-line">para você interromper a exclusão de provas de traições encontradas</div>
+        <div class="discount-pct">30% de desconto</div>
+    </div>
+
+    <a href="#oferta" id="btn-rolar-oferta" class="checkout-btn anim anim-d1">Impedir a exclusão por R$97</a>
+
+    <div class="purge anim anim-d2">
+        <div class="deadline">
+            <div class="deadline-label">Os dados serão apagados em</div>
+            <div class="deadline-clock clock">05:00</div>
+        </div>
+
+        <div class="purge-head">
+            <div class="purge-title">
+                <svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                <span id="purge-title">Apagando relatório</span>
+            </div>
+            <div class="purge-pct" id="purge-pct">18%</div>
+        </div>
+        <div class="purge-track"><div class="purge-fill" id="purge-fill"></div></div>
+
+        <div class="rows">
+            <div class="row busy">
+                <div class="row-ico green">
+                    <svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+                </div>
+                <div class="row-text">
+                    <div class="row-title">Conversas suspeitas</div>
+                    <div class="row-sub">58 mensagens encontradas</div>
+                </div>
+                <div class="row-state">Apagando</div>
+            </div>
+            <div class="row busy">
+                <div class="row-ico orange">
+                    <svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0022.5 18.75V5.25A2.25 2.25 0 0020.25 3H3.75A2.25 2.25 0 001.5 5.25v13.5A2.25 2.25 0 003.75 21z"/></svg>
+                </div>
+                <div class="row-text">
+                    <div class="row-title">Fotos escondidas</div>
+                    <div class="row-sub">20 fotos e 5 vídeos com senha</div>
+                </div>
+                <div class="row-state">Apagando</div>
+            </div>
+            <div class="row busy">
+                <div class="row-ico red">
+                    <svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z"/></svg>
+                </div>
+                <div class="row-text">
+                    <div class="row-title">Local que não bate</div>
+                    <div class="row-sub">7 lugares diferentes do dito</div>
+                </div>
+                <div class="row-state">Apagando</div>
+            </div>
+            <div class="row busy">
+                <div class="row-ico purple">
+                    <svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                </div>
+                <div class="row-text">
+                    <div class="row-title">Horários de conexão</div>
+                    <div class="row-sub">Atividade de madrugada detectada</div>
+                </div>
+                <div class="row-state">Apagando</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="offer-box anim anim-d3" id="oferta">
+        <div class="offer-badge">Interrompa a exclusão</div>
+
+        <div class="ladder">
+            <div class="rung">
+                <div class="rung-label">Normal</div>
+                <div class="rung-value">R$137</div>
+            </div>
+            <div class="rung-arrow"><svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3"/></svg></div>
+            <div class="rung now">
+                <div class="rung-label">Agora</div>
+                <div class="rung-value"><span class="currency">R$</span>97</div>
+            </div>
+        </div>
+
+        <div class="offer-save">R$40 a menos do que você ia pagar</div>
+
+        <div class="countdown-inline">
+            <span class="ci-label" id="ci-label">Exclusão termina em:</span>
+            <span class="back-countdown clock">05:00</span>
+        </div>
+
+        <a id="checkout-btn" href="https://checkout.payt.com.br/bb95689525a6d3de649152716de88616?payment=pix&src=M-BACK2-CTA-PREPITCH" class="checkout-btn checkout-link" data-pos="oferta">
+            Impedir a exclusão por R$97
+        </a>
+    </div>
+
+    <div class="leave-box anim anim-d4">
+        <svg aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+        <div>
+            <div class="leave-text">Todas as <strong>provas de traições</strong> serão excluídas <strong>para sempre</strong> se você não finalizar o pagamento.</div>
+        </div>
+    </div>
+
+
+</main>
+
+
+<script>
+
+(function() {
+    var KEY = 'zr_b1_fim';
+    var DUR = 5 * 60 * 1000;
+    var START = 18, END = 97;
+    var clocks = document.querySelectorAll('.clock');
+    var fill = document.getElementById('purge-fill');
+    var pct = document.getElementById('purge-pct');
+    var fim = 0;
+    try { fim = parseInt(sessionStorage.getItem(KEY), 10) || 0; } catch (e) {}
+    var agora = Date.now();
+    if (!fim || fim - agora > DUR || agora - fim > 3600000) {
+        fim = agora + DUR;
+        try { sessionStorage.setItem(KEY, String(fim)); } catch (e) {}
+    }
+    function paint(txt) {
+        for (var i = 0; i < clocks.length; i++) clocks[i].textContent = txt;
+    }
+    function progress(restMs) {
+        var done = 1 - Math.max(0, restMs) / DUR;
+        var p = Math.round(START + (END - START) * done);
+        fill.style.width = p + '%';
+        pct.textContent = p + '%';
+    }
+    var timer = 0;
+    function tick() {
+        clearTimeout(timer);
+        var restMs = fim - Date.now();
+        var rest = Math.max(0, Math.ceil(restMs / 1000));
+        if (rest <= 0) {
+            paint('00:00');
+            progress(0);
+            var titulo = document.getElementById('purge-title');
+            if (titulo) titulo.textContent = 'Essa é a sua última chance';
+            return;
+        }
+        var m = Math.floor(rest / 60).toString().padStart(2, '0');
+        var s = (rest % 60).toString().padStart(2, '0');
+        paint(m + ':' + s);
+        progress(restMs);
+        timer = setTimeout(tick, 1000);
+    }
+    tick();
+    document.addEventListener('visibilitychange', function() {
+        if (!document.hidden) tick();
+    });
+})();
+</script>
+
+<script>
+    var zrLink = '/bk3-pp/';
+    var zrAtraso = 0;
+    var zrArmado = false;
+    var zrReforcado = false;
+    var zrLiberado = zrAtraso <= 0;
+    var zrHouveGesto = false;
+    var zrDestino = '';
+    var zrUltimoTamanho = 0;
+    var zrOpcoes = { passive: true };
+    var zrEventos = ['click', 'touchstart', 'touchmove', 'touchend', 'pointerdown',
+                     'pointerup', 'mousedown', 'mouseup', 'keydown', 'wheel', 'scroll'];
+
+    function zrEmpilhar() {
+      history.pushState({ zrBack: 1 }, '', location.href);
+      zrUltimoTamanho = history.length;
+    }
+
+    function zrTrio() {
+      zrEmpilhar();
+      zrEmpilhar();
+      zrEmpilhar();
+    }
+
+    function zrTemAtivacao() {
+      if (!navigator.userActivation) return true;
+      return navigator.userActivation.isActive === true;
+    }
+
+    function zrPreparar() {
+      if (zrDestino) return;
+      zrDestino =
+        zrLink.trim() +
+        (zrLink.indexOf('?') > 0 ? '&' : '?') +
+        document.location.search.replace('?', '').toString();
+      window.addEventListener('popstate', function() {
+        try { if (window.zrEvento) window.zrEvento('back_disparado', { degrau: zrLink.replace(/\//g, '') }); } catch (e) {}
+        location.replace(zrDestino);
+        setTimeout(function() { location.replace(zrDestino); }, 0);
+      });
+    }
+
+    function zrSoltarOuvintes() {
+      zrEventos.forEach(function(ev) { document.removeEventListener(ev, zrGesto, zrOpcoes); });
+      window.removeEventListener('scroll', zrGesto, zrOpcoes);
+    }
+
+    function zrGesto() {
+      if (!zrLiberado) {
+        zrHouveGesto = true;
+        return;
+      }
+      zrPreparar();
+      if (!zrArmado) {
+        zrArmado = true;
+        zrTrio();
+        setInterval(function() {
+          if (history.length > zrUltimoTamanho) zrEmpilhar();
+          else if (history.length < zrUltimoTamanho) zrUltimoTamanho = history.length;
+        }, 250);
+      }
+      if (zrTemAtivacao() && !zrReforcado) {
+        zrReforcado = true;
+        zrTrio();
+        zrSoltarOuvintes();
+      }
+    }
+
+    zrEventos.forEach(function(ev) { document.addEventListener(ev, zrGesto, zrOpcoes); });
+    window.addEventListener('scroll', zrGesto, zrOpcoes);
+
+    if (zrAtraso > 0) {
+      setTimeout(function() {
+        zrLiberado = true;
+        if (zrHouveGesto) zrGesto();
+      }, zrAtraso);
+    }
+
+    window.addEventListener('pageshow', function(e) {
+      if (!e.persisted || !zrArmado) return;
+      if (history.state && history.state.zrBack) return;
+      zrTrio();
+    });
+</script>
+
+<script>
+
+(function () {
+    var botao = document.getElementById('btn-rolar-oferta');
+    var alvo = document.getElementById('oferta');
+    if (!botao || !alvo) return;
+    var suave = !window.matchMedia || !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    botao.addEventListener('click', function (e) {
+        e.preventDefault();
+        alvo.scrollIntoView({ behavior: suave ? 'smooth' : 'auto', block: 'start' });
+    });
+})();
+</script>
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092" integrity="sha512-UKNk8GbxkABxKcXYuLkO16EleLGUkcvJWtpSNmExE0Too3ZaFAxTscNWEc1OdAv5/BikHawapSCaiD2XCmp+Bw==" data-cf-beacon='{"version":"2024.11.0","token":"f0cae46b20da495083c4de943f3bd755","r":1,"spa":2}' crossorigin="anonymous"></script>
+</body>
+</html>
